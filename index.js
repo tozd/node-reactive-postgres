@@ -4,15 +4,15 @@ const {randomId} = require('./random');
 
 const DEFAULT_QUERY_OPTIONS = {
   primaryColumn: 'id',
+  refreshDebounceWait: 100, // ms
 };
 
 const DEFAULT_MANAGER_OPTIONS = {
   maxConnections: 10,
-  sourceDebounceWait: 100, // ms
   connectionConfig: {},
 };
 
-const NOTIFICATION_REGEX = /^(.+)_(query_ready|query_changed|source_changed)$/;
+const NOTIFICATION_REGEX = /^(.+)_(query_ready|query_changed|query_refreshed|source_changed)$/;
 
 class ReactiveQueryHandle {
   constructor(manager, queryId, options) {
@@ -31,6 +31,7 @@ class ReactiveQueryHandle {
     client.query(`
       LISTEN "${this.queryId}_query_ready";
       LISTEN "${this.queryId}_query_changed";
+      LISTEN "${this.queryId}_query_refreshed";
       LISTEN "${this.queryId}_source_changed";
     `);
 
@@ -61,22 +62,40 @@ class ReactiveQueryHandle {
   }
 
   async end() {
+    // TODO: Implement.
     this.manager._handles.delete(this.queryId);
   }
 
-  _onQueryReady(payload) {
+  async _onQueryReady(payload) {
     // TODO: Implement.
-    console.log("query ready", payload);
-  }
-  
-  _onQueryChanged(payload) {
-    // TODO: Implement.
-    console.log("query changed", payload);
+    console.log(new Date(), "query ready", payload);
   }
 
-  _onSourceChanged(payload) {
+  async _onQueryRefreshed(payload) {
     // TODO: Implement.
-    console.log("source changed", payload);
+    console.log(new Date(), "query refreshed", payload);
+  }
+
+  async _onQueryChanged(payload) {
+    // TODO: Implement.
+    console.log(new Date(), "query changed", payload);
+  }
+
+  async _onSourceChanged(payload) {
+    // TODO: Implement debounce.
+    console.log(new Date(), "source changed", payload);
+    const client = await this.manager.reserveClientForQuery(this.queryId);
+    try {
+      client.query(`
+        START TRANSACTION;
+        REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
+        NOTIFY "${this.queryId}_query_refreshed", '{}';
+        COMMIT;
+      `);
+    }
+    finally {
+      await this.manager.releaseClient(client);
+    }
   }
 
   _extractSources(queryExplanation) {
@@ -109,27 +128,30 @@ class Manager {
   }
 
   async initialize() {
+    // TODO: Implement.
     this._client = await this._createClient();
   }
 
   async end() {
-
+    // TODO: Implement.
   }
 
   async reserveClient() {
+    // TODO: Implement.
+    return this._client;
+  }
+
+  async reserveClientForQuery(queryId) {
+    // TODO: Implement.
     return this._client;
   }
 
   async releaseClient(client) {
-
-  }
-
-  async getClientForQuery(queryId) {
-    return this._client;
+    // TODO: Implement.
   }
 
   _setQueryForClient(client, queryId) {
-
+    // TODO: Implement.
   }
 
   async _createClient() {
@@ -243,6 +265,9 @@ class Manager {
     }
     else if (notificationType === 'query_changed') {
       handle._onQueryChanged(payload);
+    }
+    else if (notificationType === 'query_refreshed') {
+      handle._onQueryRefreshed(payload);
     }
     else if (notificationType === 'source_changed') {
       handle._onSourceChanged(payload);
