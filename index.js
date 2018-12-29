@@ -33,6 +33,7 @@ class ReactiveQueryHandle extends EventEmitter {
 
     this._started = false;
     this._stopped = false;
+    this._dirty = false;
   }
 
   async start() {
@@ -106,11 +107,15 @@ class ReactiveQueryHandle extends EventEmitter {
 
   async _onQueryRefreshed(payload) {
     // TODO: Implement batching.
-    // TODO: Only issue if anything really changed.
-    this.emit('refreshed');
+    if (this._dirty) {
+      this.emit('refreshed');
+      this._dirty = false;
+    }
   }
 
   async _onQueryChanged(payload) {
+    this._dirty = true;
+
     // TODO: Implement fetching and batching.
     if (payload.op === 'insert') {
       this.emit('insert', {id: payload.id});
