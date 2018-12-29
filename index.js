@@ -104,8 +104,8 @@ class ReactiveQueryHandle extends EventEmitter {
   }
 
   async _onQueryRefreshed(payload) {
-    // TODO: Implement.
-    console.log(new Date(), "query refreshed", payload);
+    // TODO: Implement batching.
+    this.emit('refreshed');
   }
 
   async _onQueryChanged(payload) {

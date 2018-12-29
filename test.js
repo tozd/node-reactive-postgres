@@ -75,6 +75,10 @@ async function sleep(ms) {
       console.log('query ready', handle.queryId);
     });
 
+    handle.on('refreshed', () => {
+      console.log('query refreshed', handle.queryId);
+    });
+
     handle.on('error', (error) => {
       console.log('query error', handle.queryId, error);
     });
