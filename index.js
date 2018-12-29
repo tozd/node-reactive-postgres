@@ -5,10 +5,11 @@ const {Client} = require('pg');
 const {randomId} = require('./random');
 
 const DEFAULT_QUERY_OPTIONS = {
-  primaryColumn: 'id',
+  uniqueColumn: 'id',
   refreshDebounceWait: 100, // ms
   // Can be "id", "columns", "fullObject", "changedObject", "fullRow", "changedRow".
   mode: 'id',
+  // When mode is "fullObject", "changedObject", "fullRow", "changedRow", do we batch fetching of data or not?
   batchByRefresh: true,
   // Custom type parsers.
   types: null,
@@ -72,11 +73,11 @@ class ReactiveQueryHandle extends EventEmitter {
       await client.query(`
         START TRANSACTION;
         CREATE TEMPORARY MATERIALIZED VIEW "${this.queryId}_view" AS ${this.query} WITH NO DATA;
-        CREATE UNIQUE INDEX "${this.queryId}_view_id" ON "${this.queryId}_view" ("${this.options.primaryColumn}");
+        CREATE UNIQUE INDEX "${this.queryId}_view_id" ON "${this.queryId}_view" ("${this.options.uniqueColumn}");
         ${sourcesTriggers}
-        CREATE TRIGGER "${this.queryId}_query_changed_insert" AFTER INSERT ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.primaryColumn}');
-        CREATE TRIGGER "${this.queryId}_query_changed_update" AFTER UPDATE ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.primaryColumn}');
-        CREATE TRIGGER "${this.queryId}_query_changed_delete" AFTER DELETE ON "${this.queryId}_view" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.primaryColumn}');
+        CREATE TRIGGER "${this.queryId}_query_changed_insert" AFTER INSERT ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.uniqueColumn}');
+        CREATE TRIGGER "${this.queryId}_query_changed_update" AFTER UPDATE ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.uniqueColumn}');
+        CREATE TRIGGER "${this.queryId}_query_changed_delete" AFTER DELETE ON "${this.queryId}_view" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.uniqueColumn}');
         REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
         NOTIFY "${this.queryId}_query_refreshed", '{}';
         NOTIFY "${this.queryId}_query_ready", '{}';

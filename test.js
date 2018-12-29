@@ -69,7 +69,7 @@ async function sleep(ms) {
   ];
 
   for (const query of queries) {
-    const handle = await manager.query(query, {primaryColumn: '_id'});
+    const handle = await manager.query(query, {uniqueColumn: '_id'});
 
     handle.on('ready', () => {
       console.log('query ready', handle.queryId);
