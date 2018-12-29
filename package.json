@@ -1,7 +1,7 @@
 {
   "name": "reactive-postgres",
   "version": "0.1.0",
-  "description": "Pub/sub reactive queries for PostgreSQL",
+  "description": "Reactive queries for PostgreSQL",
   "main": "index.js",
   "dependencies": {
     "pg": "~7.7.1"
