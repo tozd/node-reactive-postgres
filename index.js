@@ -1,3 +1,5 @@
+const EventEmitter = require('events');
+
 const {Client} = require('pg');
 
 const {randomId} = require('./random');
@@ -5,6 +7,11 @@ const {randomId} = require('./random');
 const DEFAULT_QUERY_OPTIONS = {
   primaryColumn: 'id',
   refreshDebounceWait: 100, // ms
+  // Can be "id", "columns", "fullObject", "changedObject", "fullRow", "changedRow".
+  mode: 'id',
+  batchByRefresh: true,
+  // Custom type parsers.
+  types: null,
 };
 
 const DEFAULT_MANAGER_OPTIONS = {
@@ -14,61 +21,86 @@ const DEFAULT_MANAGER_OPTIONS = {
 
 const NOTIFICATION_REGEX = /^(.+)_(query_ready|query_changed|query_refreshed|source_changed)$/;
 
-class ReactiveQueryHandle {
-  constructor(manager, queryId, options) {
+class ReactiveQueryHandle extends EventEmitter {
+  constructor(manager, queryId, query, options) {
+    super();
+
     this.manager = manager;
     this.queryId = queryId;
+    this.query = query;
     this.options = options;
 
-    this.manager._handles.set(this.queryId, this);
+    this._started = false;
+    this._stopped = false;
   }
 
-  async initialize(client, query) {
-    const {rows: queryExplanation} = await client.query({text: `EXPLAIN (FORMAT JSON) (${query})`, rowMode: 'array'});
+  async start() {
+    if (this._started) {
+      throw new Error("Query has already been started.");
+    }
+    if (this._stopped) {
+      throw new Error("Query has already been stopped.");
+    }
 
-    const sources = [...this._extractSources(queryExplanation)].sort();
+    this._started = true;
 
-    client.query(`
-      LISTEN "${this.queryId}_query_ready";
-      LISTEN "${this.queryId}_query_changed";
-      LISTEN "${this.queryId}_query_refreshed";
-      LISTEN "${this.queryId}_source_changed";
-    `);
+    const client = await this.manager.reserveClientForQuery(this.queryId);
+    try {
+      const {rows: queryExplanation} = await client.query({text: `EXPLAIN (FORMAT JSON) (${this.query})`, rowMode: 'array'});
 
-    // TODO: Handle also TRUNCATE of sources? What if it is not really a table but a view or something else?
-    const sourcesTriggers = sources.map((source) => {
-      return `
-        CREATE TRIGGER "${this.queryId}_source_changed_${source}_insert" AFTER INSERT ON "${source}" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
-        CREATE TRIGGER "${this.queryId}_source_changed_${source}_update" AFTER UPDATE ON "${source}" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
-        CREATE TRIGGER "${this.queryId}_source_changed_${source}_delete" AFTER DELETE ON "${source}" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
-      `;
-    }).join('\n');
+      const sources = [...this._extractSources(queryExplanation)].sort();
 
-    // We create a temporary materialized view based on a query, but without data, just
-    // structure. We add triggers to notify the client about changes to sources and
-    // the materialized view. We then refresh materialized view for the first time.
-    await client.query(`
-      START TRANSACTION;
-      CREATE TEMPORARY MATERIALIZED VIEW "${this.queryId}_view" AS ${query} WITH NO DATA;
-      CREATE UNIQUE INDEX "${this.queryId}_view_id" ON "${this.queryId}_view" ("${this.options.primaryColumn}");
-      ${sourcesTriggers}
-      CREATE TRIGGER "${this.queryId}_query_changed_insert" AFTER INSERT ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.primaryColumn}');
-      CREATE TRIGGER "${this.queryId}_query_changed_update" AFTER UPDATE ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.primaryColumn}');
-      CREATE TRIGGER "${this.queryId}_query_changed_delete" AFTER DELETE ON "${this.queryId}_view" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.primaryColumn}');
-      REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
-      NOTIFY "${this.queryId}_query_ready", '{}';
-      COMMIT;
-    `);
+      client.query(`
+        LISTEN "${this.queryId}_query_ready";
+        LISTEN "${this.queryId}_query_changed";
+        LISTEN "${this.queryId}_query_refreshed";
+        LISTEN "${this.queryId}_source_changed";
+      `);
+
+      // TODO: Handle also TRUNCATE of sources? What if it is not really a table but a view or something else?
+      const sourcesTriggers = sources.map((source) => {
+        return `
+          CREATE TRIGGER "${this.queryId}_source_changed_${source}_insert" AFTER INSERT ON "${source}" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
+          CREATE TRIGGER "${this.queryId}_source_changed_${source}_update" AFTER UPDATE ON "${source}" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
+          CREATE TRIGGER "${this.queryId}_source_changed_${source}_delete" AFTER DELETE ON "${source}" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
+        `;
+      }).join('\n');
+
+      // We create a temporary materialized view based on a query, but without data, just
+      // structure. We add triggers to notify the client about changes to sources and
+      // the materialized view. We then refresh the materialized view for the first time.
+      await client.query(`
+        START TRANSACTION;
+        CREATE TEMPORARY MATERIALIZED VIEW "${this.queryId}_view" AS ${this.query} WITH NO DATA;
+        CREATE UNIQUE INDEX "${this.queryId}_view_id" ON "${this.queryId}_view" ("${this.options.primaryColumn}");
+        ${sourcesTriggers}
+        CREATE TRIGGER "${this.queryId}_query_changed_insert" AFTER INSERT ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.primaryColumn}');
+        CREATE TRIGGER "${this.queryId}_query_changed_update" AFTER UPDATE ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.primaryColumn}');
+        CREATE TRIGGER "${this.queryId}_query_changed_delete" AFTER DELETE ON "${this.queryId}_view" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.primaryColumn}');
+        REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
+        NOTIFY "${this.queryId}_query_refreshed", '{}';
+        NOTIFY "${this.queryId}_query_ready", '{}';
+        COMMIT;
+      `);
+    }
+    catch (error) {
+      this._stopped = true;
+      this.emit('error', error);
+      this.emit('end', error);
+      throw error;
+    }
+    finally {
+      await this.manager.releaseClient(client);
+    }
   }
 
-  async end() {
+  async stop() {
     // TODO: Implement.
-    this.manager._handles.delete(this.queryId);
+    this._stopped = true;
   }
 
   async _onQueryReady(payload) {
-    // TODO: Implement.
-    console.log(new Date(), "query ready", payload);
+    this.emit('ready');
   }
 
   async _onQueryRefreshed(payload) {
@@ -127,12 +159,12 @@ class Manager {
     this._handles = new Map();
   }
 
-  async initialize() {
+  async start() {
     // TODO: Implement.
     this._client = await this._createClient();
   }
 
-  async end() {
+  async stop() {
     // TODO: Implement.
   }
 
@@ -150,8 +182,24 @@ class Manager {
     // TODO: Implement.
   }
 
-  _setQueryForClient(client, queryId) {
+  _setClientForQuery(client, queryId) {
     // TODO: Implement.
+  }
+
+  _deleteClientForQuery(queryId) {
+    // TODO: Implement.
+  }
+
+  _setHandleForQuery(handle, queryId) {
+    this._handles.set(queryId, handle);
+  }
+
+  _getHandleForQuery(queryId) {
+    return this._handles.get(queryId);
+  }
+
+  _deleteHandleForQuery(queryId) {
+    this._handles.delete(queryId);
   }
 
   async _createClient() {
@@ -221,20 +269,17 @@ class Manager {
   async query(query, options) {
     options = Object.assign({}, DEFAULT_QUERY_OPTIONS, options);
 
-    let handle = null;
     const queryId = await randomId();
     const client = await this.reserveClient();
     try {
-      handle = new ReactiveQueryHandle(this, queryId, options);
-      await handle.initialize(client, query);
-      this._setQueryForClient(client, queryId);
+      const handle = new ReactiveQueryHandle(this, queryId, query, options);
+      this._setClientForQuery(client, queryId);
+      this._setHandleForQuery(handle, queryId);
+      handle.once('end', (error) => {
+        this._deleteClientForQuery(queryId);
+        this._deleteHandleForQuery(queryId);
+      });
       return handle;
-    }
-    catch (error) {
-      if (handle) {
-        handle.end();
-      }
-      throw error;
     }
     finally {
       await this.releaseClient(client);
@@ -252,7 +297,7 @@ class Manager {
     const queryId = match[1];
     const notificationType = match[2];
 
-    const handle = this._handles.get(queryId);
+    const handle = this._getHandleForQuery(queryId);
     if (!handle) {
       console.warn(`QueryId '${queryId}' without a handle.`);
       return;

@@ -22,7 +22,7 @@ async function sleep(ms) {
 }
 
 (async () => {
-  await manager.initialize();
+  await manager.start();
 
   await pool.query(`
     CREATE OR REPLACE FUNCTION random_id() RETURNS TEXT LANGUAGE SQL AS $$
@@ -70,10 +70,24 @@ async function sleep(ms) {
 
   for (const query of queries) {
     const handle = await manager.query(query, {primaryColumn: '_id'});
+
+    handle.on('ready', () => {
+      console.log('query ready', handle.queryId);
+    });
+
+    handle.on('error', (error) => {
+      console.log('query error', handle.queryId, error);
+    });
+
+    handle.on('end', (error) => {
+      console.log('query end', handle.queryId, error);
+    });
+
+    await handle.start();
   }
 
   await sleep(1000 * 1000);
 
   await pool.end();
-  await manager.end();
+  await manager.stop();
 })();
