@@ -72,19 +72,31 @@ async function sleep(ms) {
     const handle = await manager.query(query, {uniqueColumn: '_id'});
 
     handle.on('ready', () => {
-      console.log('query ready', handle.queryId);
+      console.log(new Date(), 'query ready', handle.queryId);
     });
 
     handle.on('refreshed', () => {
-      console.log('query refreshed', handle.queryId);
+      console.log(new Date(), 'query refreshed', handle.queryId);
+    });
+
+    handle.on('insert', (row) => {
+      console.log(new Date(), 'insert', handle.queryId, row);
+    });
+
+    handle.on('update', (row) => {
+      console.log(new Date(), 'update', handle.queryId, row);
+    });
+
+    handle.on('delete', (row) => {
+      console.log(new Date(), 'delete', handle.queryId, row);
     });
 
     handle.on('error', (error) => {
-      console.log('query error', handle.queryId, error);
+      console.log(new Date(), 'query error', handle.queryId, error);
     });
 
     handle.on('end', (error) => {
-      console.log('query end', handle.queryId, error);
+      console.log(new Date(), 'query end', handle.queryId, error);
     });
 
     await handle.start();

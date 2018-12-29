@@ -106,17 +106,28 @@ class ReactiveQueryHandle extends EventEmitter {
 
   async _onQueryRefreshed(payload) {
     // TODO: Implement batching.
+    // TODO: Only issue if anything really changed.
     this.emit('refreshed');
   }
 
   async _onQueryChanged(payload) {
-    // TODO: Implement.
-    console.log(new Date(), "query changed", payload);
+    // TODO: Implement fetching and batching.
+    if (payload.op === 'insert') {
+      this.emit('insert', {id: payload.id});
+    }
+    else if (payload.op === 'update') {
+      this.emit('update', {id: payload.id});
+    }
+    else if (payload.op === 'delete') {
+      this.emit('delete', {id: payload.id});
+    }
+    else {
+      console.error(`Unknown query changed op '${payload.op}'.`);
+    }
   }
 
   async _onSourceChanged(payload) {
     // TODO: Implement debounce.
-    console.log(new Date(), "source changed", payload);
     const client = await this.manager.reserveClientForQuery(this.queryId);
     try {
       client.query(`
@@ -207,6 +218,7 @@ class Manager {
     const client = new Client(this.options.connectionConfig);
 
     client.on('error', (error) => {
+      // TODO: Redirect to all queries on this client and stop them.
       console.error("PostgreSQL client error.", error);
     });
     client.on('notice', (notice) => {
