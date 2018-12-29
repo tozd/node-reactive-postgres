@@ -12,7 +12,7 @@ const DEFAULT_MANAGER_OPTIONS = {
   connectionConfig: {},
 };
 
-const NOTIFICATION_REGEX = /^(.+)_(query_changed|source_changed)$/;
+const NOTIFICATION_REGEX = /^(.+)_(query_ready|query_changed|source_changed)$/;
 
 class ReactiveQueryHandle {
   constructor(manager, queryId, options) {
@@ -29,6 +29,7 @@ class ReactiveQueryHandle {
     const sources = [...this._extractSources(queryExplanation)].sort();
 
     client.query(`
+      LISTEN "${this.queryId}_query_ready";
       LISTEN "${this.queryId}_query_changed";
       LISTEN "${this.queryId}_source_changed";
     `);
@@ -54,6 +55,7 @@ class ReactiveQueryHandle {
       CREATE TRIGGER "${this.queryId}_query_changed_update" AFTER UPDATE ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.primaryColumn}');
       CREATE TRIGGER "${this.queryId}_query_changed_delete" AFTER DELETE ON "${this.queryId}_view" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.primaryColumn}');
       REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
+      NOTIFY "${this.queryId}_query_ready", '{}';
       COMMIT;
     `);
   }
@@ -62,6 +64,11 @@ class ReactiveQueryHandle {
     this.manager._handles.delete(this.queryId);
   }
 
+  _onQueryReady(payload) {
+    // TODO: Implement.
+    console.log("query ready", payload);
+  }
+  
   _onQueryChanged(payload) {
     // TODO: Implement.
     console.log("query changed", payload);
@@ -231,7 +238,10 @@ class Manager {
 
     const payload = JSON.parse(message.payload);
 
-    if (notificationType === 'query_changed') {
+    if (notificationType === 'query_ready') {
+      handle._onQueryReady(payload);
+    }
+    else if (notificationType === 'query_changed') {
       handle._onQueryChanged(payload);
     }
     else if (notificationType === 'source_changed') {
