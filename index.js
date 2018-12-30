@@ -402,7 +402,6 @@ class Manager {
     // are the same in "new_table" and "old_table", and we are joining on column names.
     // There should always be something different, so "array_agg" should never return NULL
     // in "notify_query_changed", but we still make sure this is so with COALESCE.
-    // TODO: Send which columns have been updated in "notify_query_changes".
     // TODO: We could have only one set of "notify_source_changed" triggers per each source.
     //       We could install them the first time but then leave them around. Clients subscribing
     //       to shared notifications based on source name.
