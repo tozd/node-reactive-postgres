@@ -39,6 +39,7 @@ class ReactiveQueryHandle extends EventEmitter {
     this._dirty = false;
     this._batch = [];
     this._readyPending = false;
+    this._sources = null;
   }
 
   async start() {
@@ -55,17 +56,10 @@ class ReactiveQueryHandle extends EventEmitter {
     try {
       const {rows: queryExplanation} = await client.query({text: `EXPLAIN (FORMAT JSON) (${this.query})`, rowMode: 'array'});
 
-      const sources = [...this._extractSources(queryExplanation)].sort();
-
-      client.query(`
-        LISTEN "${this.queryId}_query_ready";
-        LISTEN "${this.queryId}_query_changed";
-        LISTEN "${this.queryId}_query_refreshed";
-        LISTEN "${this.queryId}_source_changed";
-      `);
+      this._sources = [...this._extractSources(queryExplanation)].sort();
 
       // TODO: Handle also TRUNCATE of sources? What if it is not really a table but a view or something else?
-      const sourcesTriggers = sources.map((source) => {
+      const sourcesTriggers = this._sources.map((source) => {
         return `
           CREATE TRIGGER "${this.queryId}_source_changed_${source}_insert" AFTER INSERT ON "${source}" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
           CREATE TRIGGER "${this.queryId}_source_changed_${source}_update" AFTER UPDATE ON "${source}" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
@@ -78,6 +72,10 @@ class ReactiveQueryHandle extends EventEmitter {
       // the materialized view. We then refresh the materialized view for the first time.
       await client.query(`
         START TRANSACTION;
+        LISTEN "${this.queryId}_query_ready";
+        LISTEN "${this.queryId}_query_changed";
+        LISTEN "${this.queryId}_query_refreshed";
+        LISTEN "${this.queryId}_source_changed";
         CREATE TEMPORARY MATERIALIZED VIEW "${this.queryId}_view" AS ${this.query} WITH NO DATA;
         CREATE UNIQUE INDEX "${this.queryId}_view_id" ON "${this.queryId}_view" ("${this.options.uniqueColumn}");
         ${sourcesTriggers}
@@ -102,8 +100,43 @@ class ReactiveQueryHandle extends EventEmitter {
   }
 
   async stop() {
-    // TODO: Implement.
+    if (this._stopped) {
+      return;
+    }
+
     this._stopped = true;
+
+    const sourcesTriggers = this._sources.map((source) => {
+      return `
+        DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_insert" ON "${source}";
+        DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_update" ON "${source}";
+        DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_delete" ON "${source}";
+      `;
+    }).join('\n');
+
+    const client = await this.manager.reserveClientForQuery(this.queryId);
+    try {
+      await client.query(`
+        START TRANSACTION;
+        UNLISTEN "${this.queryId}_query_ready";
+        UNLISTEN "${this.queryId}_query_changed";
+        UNLISTEN "${this.queryId}_query_refreshed";
+        UNLISTEN "${this.queryId}_source_changed";
+        ${sourcesTriggers}
+        DROP MATERIALIZED VIEW IF EXISTS "${this.queryId}_view" CASCADE;
+        COMMIT;
+      `);
+    }
+    catch (error) {
+      this.emit('error', error);
+      this.emit('end', error);
+      throw error;
+    }
+    finally {
+      await this.manager.releaseClient(client);
+    }
+
+    this.emit('end');
   }
 
   async _onQueryReady(payload) {
@@ -344,6 +377,14 @@ class Manager {
 
   async stop() {
     // TODO: Implement.
+    while (this._handles.size) {
+      for (const [key, value] of this._handles.entries()) {
+        await value.stop();
+        this._handles.delete(key);
+      }
+    }
+
+    await this._client.end();
   }
 
   async reserveClient() {

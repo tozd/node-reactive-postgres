@@ -102,7 +102,7 @@ async function sleep(ms) {
     await handle.start();
   }
 
-  await sleep(1000 * 1000);
+  await sleep(10 * 1000);
 
   await pool.end();
   await manager.stop();
