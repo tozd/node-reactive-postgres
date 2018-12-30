@@ -60,7 +60,9 @@ class ReactiveQueryHandle extends EventEmitter {
 
       this._sources = [...this._extractSources(queryExplanation)].sort();
 
-      // TODO: Handle also TRUNCATE of sources? What if it is not really a table but a view or something else?
+      // TODO: Handle also TRUNCATE of sources?
+      //       What if it is not really a table but a view or something else?
+      //       We should try to create a trigger inside a sub-transaction we can rollback if it fails.
       const sourcesTriggers = this._sources.map((source) => {
         return `
           CREATE TRIGGER "${this.queryId}_source_changed_${source}_insert" AFTER INSERT ON "${source}" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
