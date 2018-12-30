@@ -1,4 +1,5 @@
 const EventEmitter = require('events');
+const assert = require('assert');
 
 const {Client} = require('pg');
 
@@ -7,10 +8,10 @@ const {randomId} = require('./random');
 const DEFAULT_QUERY_OPTIONS = {
   uniqueColumn: 'id',
   refreshDebounceWait: 100, // ms
-  // Can be "id", "full", "changed", "idRow", "fullRow", "changedRow".
+  // Can be "id", "changed", "full".
   mode: 'id',
-  // When mode is "full", "changed", "fullRow", "changedRow", in how large batches do we fetch data inside one refresh?
-  // 0 means only one query per refresh.
+  // When mode is "changed" or "full", in how large batches do we fetch data inside one refresh?
+  // 0 means only one batch per refresh.
   batchSize: 0,
   // Custom type parsers.
   types: null,
@@ -36,6 +37,8 @@ class ReactiveQueryHandle extends EventEmitter {
     this._started = false;
     this._stopped = false;
     this._dirty = false;
+    this._batch = [];
+    this._readyPending = false;
   }
 
   async start() {
@@ -104,41 +107,184 @@ class ReactiveQueryHandle extends EventEmitter {
   }
 
   async _onQueryReady(payload) {
-    this.emit('ready');
+    this._readyPending = true;
   }
 
   async _onQueryRefreshed(payload) {
-    // TODO: Implement batching.
     if (this._dirty) {
-      this.emit('refreshed');
       this._dirty = false;
+      await this._processBatch(true);
+      this.emit('refreshed');
+      if (this._readyPending) {
+        this._readyPending = false;
+        this.emit('ready');
+      }
     }
   }
 
   async _onQueryChanged(payload) {
-    this._dirty = true;
-
-    let row;
-    if (this.options.mode === 'id') {
-      row = {};
-      row[this.options.uniqueColumn] = payload.id;
-    }
-    else if (this.options.mode === 'idRow') {
-      row = [payload.id];
-    }
-
-    // TODO: Implement fetching and batching.
-    if (payload.op === 'insert') {
-      this.emit('insert', row);
-    }
-    else if (payload.op === 'update') {
-      this.emit('update', row, payload.columns);
-    }
-    else if (payload.op === 'delete') {
-      this.emit('delete', row);
+    if (payload.op === 'insert' || payload.op === 'update' || payload.op === 'delete') {
+      this._dirty = true;
+      this._batch.push(payload);
+      await this._processBatch(false);
     }
     else {
       console.error(`Unknown query changed op '${payload.op}'.`);
+    }
+  }
+
+  async _processBatch(isRefresh) {
+    // When only ID is requested we do not need to fetch data, so we do not batch anything.
+    if (this.options.mode === 'id') {
+      this._processBatchIdMode();
+    }
+    else if (this.options.batchSize < 1 && isRefresh) {
+      await this._processBatchFetchMode();
+    }
+    else if (this.options.batchSize > 0 && this._batch.length >= this.options.batchSize) {
+      await this._processBatchFetchMode();
+    }
+  }
+
+  _processBatchIdMode() {
+    while (this._batch.length) {
+      const payload = this._batch.shift();
+
+      const row = {};
+      row[this.options.uniqueColumn] = payload.id;
+
+      if (payload.op === 'insert') {
+        this.emit('insert', row);
+      }
+      else if (payload.op === 'update') {
+        this.emit('update', row, payload.columns);
+      }
+      else if (payload.op === 'delete') {
+        this.emit('delete', row);
+      }
+      else {
+        assert.fail(`Unexpected query changed op '${payload.op}'.`);
+      }
+    }
+  }
+
+  async _processBatchFetchMode() {
+    if (!this._batch.length) {
+      return;
+    }
+
+    // Copy to a local variable.
+    const batch = this._batch;
+    this._batch = [];
+
+    const idsToFetchForInsert = new Set();
+    const idsToFetchForUpdate = new Set();
+    const columnsToFetchForUpdate = new Set();
+    for (const payload of batch) {
+      if (payload.op === 'insert') {
+        idsToFetchForInsert.add(payload.id);
+      }
+      else if (payload.op === 'update') {
+        idsToFetchForUpdate.add(payload.id);
+        for (const columnName of payload.columns) {
+          columnsToFetchForUpdate.add(columnName);
+        }
+      }
+    }
+
+    // Always fetch ID column.
+    columnsToFetchForUpdate.add(this.options.uniqueColumn);
+
+    // "idsToFetchForInsert" and "idsToFetchForUpdate" should be disjoint and
+    // this is true because we are fetching inside one refresh.
+
+    const rows = new Map();
+    const client = await this.manager.reserveClientForQuery(this.queryId);
+    try {
+      if (this.options.mode === 'changed') {
+        const updateColumns = '"' + [...columnsToFetchForUpdate].join('", "') + '"';
+
+        // We do one query for inserted rows.
+        let response = await client.query({
+          text: `
+            SELECT * FROM "${this.queryId}_view" WHERE "${this.options.uniqueColumn}"=ANY($1);
+          `,
+          values: [[...idsToFetchForInsert]],
+          types: this.options.types,
+        });
+
+        for (const row of response.rows) {
+          rows.set(row[this.options.uniqueColumn], row);
+        }
+
+        // And we do one query for updated rows. Here we might be able to fetch less columns.
+        response = await client.query({
+          text: `
+            SELECT ${updateColumns} FROM "${this.queryId}_view" WHERE "${this.options.uniqueColumn}"=ANY($1);
+          `,
+          values: [[...idsToFetchForUpdate]],
+          types: this.options.types,
+        });
+
+        for (const row of response.rows) {
+          rows.set(row[this.options.uniqueColumn], row);
+        }
+      }
+      else if (this.options.mode === 'full') {
+        // We can just do one query.
+        const response = await client.query({
+          text: `
+            SELECT * FROM "${this.queryId}_view" WHERE "${this.options.uniqueColumn}"=ANY($1);
+          `,
+          values: [[...idsToFetchForInsert, ...idsToFetchForUpdate]],
+          types: this.options.types,
+        });
+
+        for (const row of response.rows) {
+          rows.set(row[this.options.uniqueColumn], row);
+        }
+      }
+      else {
+        assert.fail(`Unexpected query mode '${this.options.mode}'.`);
+      }
+    }
+    finally {
+      await this.manager.releaseClient(client);
+    }
+
+    for (const payload of batch) {
+      if (payload.op === 'insert') {
+        const row = rows.get(payload.id);
+        // It could happen that row was deleted in meantime and we could not fetch it.
+        // We do not do anything for now and leave it to a future notification to handle this.
+        if (row) {
+          this.emit('insert', row);
+        }
+      }
+      else if (payload.op === 'update') {
+        const row = rows.get(payload.id);
+        // It could happen that row was deleted in meantime and we could not fetch it.
+        // We do not do anything for now and leave it to a future notification to handle this.
+        if (row) {
+          // Different rows might have different columns updated. We had to fetch
+          // a superset of all changed columns and here we have to remove those
+          // columns which have not changed for a particular row.
+          for (const key of Object.keys(row)) {
+            if (key !== this.options.uniqueColumn && !payload.columns.includes(key)) {
+              delete row[key];
+            }
+          }
+          this.emit('update', row, payload.columns);
+        }
+      }
+      else if (payload.op === 'delete') {
+        const row = {};
+        row[this.options.uniqueColumn] = payload.id;
+        this.emit('delete', row);
+      }
+      else {
+        assert.fail(`Unexpected query changed op '${payload.op}'.`);
+      }
     }
   }
 
