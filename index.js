@@ -37,6 +37,7 @@ class ReactiveQueryHandle extends EventEmitter {
 
     this._started = false;
     this._stopped = false;
+    this._stoppingInProgress = false;
     this._dirty = false;
     this._batch = [];
     this._readyPending = false;
@@ -104,6 +105,9 @@ class ReactiveQueryHandle extends EventEmitter {
     if (this._stopped) {
       return;
     }
+    if (!this._started) {
+      throw new Error("Query has not been started.");
+    }
 
     this._stopped = true;
 
@@ -141,10 +145,18 @@ class ReactiveQueryHandle extends EventEmitter {
   }
 
   async _onQueryReady(payload) {
+    if (!this._started || this._stopped) {
+      return;
+    }
+
     this._readyPending = true;
   }
 
   async _onQueryRefreshed(payload) {
+    if (!this._started || this._stopped) {
+      return;
+    }
+
     if (this._dirty) {
       this._dirty = false;
       await this._processBatch(true);
@@ -157,6 +169,10 @@ class ReactiveQueryHandle extends EventEmitter {
   }
 
   async _onQueryChanged(payload) {
+    if (!this._started || this._stopped) {
+      return;
+    }
+
     if (payload.op === 'insert' || payload.op === 'update' || payload.op === 'delete') {
       this._dirty = true;
       this._batch.push(payload);
@@ -181,6 +197,14 @@ class ReactiveQueryHandle extends EventEmitter {
   }
 
   async flush() {
+    if (this._stopped) {
+      // This method is not returning anything, so we just ignore the call.
+      return;
+    }
+    if (!this._started) {
+      throw new Error("Query has not been started.");
+    }
+
     if (this.options.mode === 'id') {
       this._processBatchIdMode();
     }
@@ -332,6 +356,14 @@ class ReactiveQueryHandle extends EventEmitter {
   }
 
   async refresh() {
+    if (this._stopped) {
+      // This method is not returning anything, so we just ignore the call.
+      return;
+    }
+    if (!this._started) {
+      throw new Error("Query has not been started.");
+    }
+
     const client = await this.manager.reserveClientForQuery(this.queryId);
     try {
       client.query(`
@@ -347,6 +379,10 @@ class ReactiveQueryHandle extends EventEmitter {
   }
 
   async _onSourceChanged(payload) {
+    if (!this._started || this._stopped) {
+      return;
+    }
+
     // TODO: Implement debounce.
     await this.refresh();
   }
@@ -377,41 +413,97 @@ class ReactiveQueryHandle extends EventEmitter {
 class Manager {
   constructor(options={}) {
     this.options = Object.assign({}, DEFAULT_MANAGER_OPTIONS, options);
-    this._handles = new Map();
+
+    this._started = false;
+    this._stopped = false;
+    this._handlesForQuery = new Map();
+    this._clientsForQuery = new Map();
   }
 
   async start() {
-    // TODO: Implement.
-    this._client = await this._createClient();
+    if (this._started) {
+      throw new Error("Manager has already been started.");
+    }
+    if (this._stopped) {
+      throw new Error("Manager has already been stopped.");
+    }
 
-    await this._client.query(`
-      CREATE EXTENSION IF NOT EXISTS hstore;
-    `);
+    this._started = true;
+
+    const client = await this.reserveClient();
+    try {
+      await client.query(`
+        CREATE EXTENSION IF NOT EXISTS hstore;
+      `);
+    }
+    finally {
+      this.releaseClient(client);
+    }
   }
 
   async stop() {
-    // TODO: Implement.
-    while (this._handles.size) {
-      for (const [key, value] of this._handles.entries()) {
-        await value.stop();
-        this._handles.delete(key);
+    if (this._stopped) {
+      return;
+    }
+    if (!this._started) {
+      throw new Error("Manager has not been started.");
+    }
+
+    this._stopped = true;
+    this._stoppingInProgress = true;
+
+    while (this._handlesForQuery.size) {
+      for (const [queryId, handle] of this._handlesForQuery.entries()) {
+        await handle.stop();
+        this._handlesForQuery.delete(queryId);
       }
     }
+
+    this._stoppingInProgress = false;
+
+    // TODO: Implement.
 
     await this._client.end();
   }
 
   async reserveClient() {
+    if (this._stopped && !this._stoppingInProgress) {
+      // This method is returning a client, so we throw.
+      throw new Error("Manager has been stopped.");
+    }
+    if (!this._started) {
+      throw new Error("Manager has not been started.");
+    }
+
     // TODO: Implement.
+    if (!this._client) {
+      this._client = await this._createClient();
+    }
     return this._client;
   }
 
   async reserveClientForQuery(queryId) {
+    if (this._stopped && !this._stoppingInProgress) {
+      // This method is returning a client, so we throw.
+      throw new Error("Manager has been stopped.");
+    }
+    if (!this._started) {
+      throw new Error("Manager has not been started.");
+    }
+
     // TODO: Implement.
     return this._client;
   }
 
   async releaseClient(client) {
+    if (this._stopped && !this._stoppingInProgress) {
+      // This method is not returning anything, so we just ignore the call.
+      return;
+    }
+    if (!this._started) {
+      throw new Error("Manager has not been started.");
+    }
+
     // TODO: Implement.
   }
 
@@ -424,15 +516,15 @@ class Manager {
   }
 
   _setHandleForQuery(handle, queryId) {
-    this._handles.set(queryId, handle);
+    this._handlesForQuery.set(queryId, handle);
   }
 
   _getHandleForQuery(queryId) {
-    return this._handles.get(queryId);
+    return this._handlesForQuery.get(queryId);
   }
 
   _deleteHandleForQuery(queryId) {
-    this._handles.delete(queryId);
+    this._handlesForQuery.delete(queryId);
   }
 
   async _createClient() {
@@ -527,6 +619,10 @@ class Manager {
   }
 
   _onNotification(message) {
+    if (!this._started || this._stopped) {
+      return;
+    }
+
     const channel = message.channel;
 
     const match = NOTIFICATION_REGEX.exec(channel);
