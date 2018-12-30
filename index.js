@@ -6,6 +6,7 @@ const {Client} = require('pg');
 const {randomId} = require('./random');
 
 const DEFAULT_QUERY_OPTIONS = {
+  // TODO: Allow multi-column unique index as well.
   uniqueColumn: 'id',
   refreshDebounceWait: 100, // ms
   // Can be "id", "changed", "full".
