@@ -102,7 +102,23 @@ async function sleep(ms) {
     await handle.start();
   }
 
-  await sleep(10 * 1000);
+  await sleep(1000);
+
+  for (let i = 5; i < 7; i++) {
+    result = await pool.query(`
+      INSERT INTO posts ("body") VALUES($1) RETURNING _id;
+    `, [{'title': `Post title ${i}`}]);
+
+    const postId = result.rows[0]._id;
+
+    for (let j = 0; j < 10; j++) {
+      await pool.query(`
+        INSERT INTO comments ("postId", "body") VALUES($1, $2);
+      `, [postId, {'title': `Comment title ${j}`}]);
+    }
+  }
+
+  await sleep(1000);
 
   await pool.end();
   await manager.stop();
