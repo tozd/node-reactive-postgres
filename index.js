@@ -9,7 +9,8 @@ const DEFAULT_QUERY_OPTIONS = {
   refreshDebounceWait: 100, // ms
   // Can be "id", "full", "changed", "idRow", "fullRow", "changedRow".
   mode: 'id',
-  // When mode is "full", "changed", "fullRow", "changedRow", in how large batches do we fetch data? 0 means only one query per refresh.
+  // When mode is "full", "changed", "fullRow", "changedRow", in how large batches do we fetch data inside one refresh?
+  // 0 means only one query per refresh.
   batchSize: 0,
   // Custom type parsers.
   types: null,
@@ -22,6 +23,7 @@ const DEFAULT_MANAGER_OPTIONS = {
 
 const NOTIFICATION_REGEX = /^(.+)_(query_ready|query_changed|query_refreshed|source_changed)$/;
 
+// TODO: Implement stream as well.
 class ReactiveQueryHandle extends EventEmitter {
   constructor(manager, queryId, query, options) {
     super();
