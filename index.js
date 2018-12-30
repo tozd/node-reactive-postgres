@@ -7,10 +7,10 @@ const {randomId} = require('./random');
 const DEFAULT_QUERY_OPTIONS = {
   uniqueColumn: 'id',
   refreshDebounceWait: 100, // ms
-  // Can be "id", "columns", "fullObject", "changedObject", "fullRow", "changedRow".
+  // Can be "id", "full", "changed", "idRow", "fullRow", "changedRow".
   mode: 'id',
-  // When mode is "fullObject", "changedObject", "fullRow", "changedRow", do we batch fetching of data or not?
-  batchByRefresh: true,
+  // When mode is "full", "changed", "fullRow", "changedRow", in how large batches do we fetch data? 0 means only one query per refresh.
+  batchSize: 0,
   // Custom type parsers.
   types: null,
 };
@@ -116,15 +116,24 @@ class ReactiveQueryHandle extends EventEmitter {
   async _onQueryChanged(payload) {
     this._dirty = true;
 
+    let row;
+    if (this.options.mode === 'id') {
+      row = {};
+      row[this.options.uniqueColumn] = payload.id;
+    }
+    else if (this.options.mode === 'idRow') {
+      row = [payload.id];
+    }
+
     // TODO: Implement fetching and batching.
     if (payload.op === 'insert') {
-      this.emit('insert', {id: payload.id});
+      this.emit('insert', row);
     }
     else if (payload.op === 'update') {
-      this.emit('update', {id: payload.id});
+      this.emit('update', row, payload.columns);
     }
     else if (payload.op === 'delete') {
-      this.emit('delete', {id: payload.id});
+      this.emit('delete', row);
     }
     else {
       console.error(`Unknown query changed op '${payload.op}'.`);
@@ -179,6 +188,10 @@ class Manager {
   async start() {
     // TODO: Implement.
     this._client = await this._createClient();
+
+    await this._client.query(`
+      CREATE EXTENSION IF NOT EXISTS hstore;
+    `);
   }
 
   async stop() {
@@ -237,7 +250,14 @@ class Manager {
 
     // We define functions as temporary for every client so that triggers using
     // them are dropped when the client disconnects (session ends).
+    // We can use INNER JOIN in "notify_query_changed" because we know that column names
+    // are the same in "new_table" and "old_table", and we are joining on column names.
+    // There should always be something different, so "array_agg" should never return NULL
+    // in "notify_query_changed", but we still make sure this is so with COALESCE.
     // TODO: Send which columns have been updated in "notify_query_changes".
+    // TODO: We could have only one set of "notify_source_changed" triggers per each source.
+    //       We could install them the first time but then leave them around. Clients subscribing
+    //       to shared notifications based on source name.
     await client.query(`
       CREATE OR REPLACE FUNCTION pg_temp.notify_query_changed() RETURNS TRIGGER LANGUAGE plpgsql AS $$
         DECLARE
@@ -247,7 +267,7 @@ class Manager {
           IF (TG_OP = 'INSERT') THEN
             EXECUTE 'SELECT pg_notify(''' || query_id || '_query_changed'', row_to_json(changes)::text) FROM (SELECT ''insert'' AS op, "' || primary_column || '" AS id FROM new_table) AS changes';
           ELSIF (TG_OP = 'UPDATE') THEN
-            EXECUTE 'SELECT pg_notify(''' || query_id || '_query_changed'', row_to_json(changes)::text) FROM (SELECT ''update'' AS op, "' || primary_column || '" AS id FROM new_table) AS changes';
+            EXECUTE 'SELECT pg_notify(''' || query_id || '_query_changed'', row_to_json(changes)::text) FROM (SELECT ''update'' AS op, new_table."' || primary_column || '" AS id, (SELECT COALESCE(array_agg(row1.key), ARRAY[]::TEXT[]) FROM each(hstore(new_table)) AS row1 INNER JOIN each(hstore(old_table)) AS row2 ON (row1.key=row2.key) WHERE row1.value IS DISTINCT FROM row2.value) AS columns FROM new_table JOIN old_table ON (new_table."' || primary_column || '"=old_table."' || primary_column || '")) AS changes';
           ELSIF (TG_OP = 'DELETE') THEN
             EXECUTE 'SELECT pg_notify(''' || query_id || '_query_changed'', row_to_json(changes)::text) FROM (SELECT ''delete'' AS op, "' || primary_column || '" AS id FROM old_table) AS changes';
           END IF;

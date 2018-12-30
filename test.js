@@ -83,8 +83,8 @@ async function sleep(ms) {
       console.log(new Date(), 'insert', handle.queryId, row);
     });
 
-    handle.on('update', (row) => {
-      console.log(new Date(), 'update', handle.queryId, row);
+    handle.on('update', (row, columns) => {
+      console.log(new Date(), 'update', handle.queryId, row, columns);
     });
 
     handle.on('delete', (row) => {
