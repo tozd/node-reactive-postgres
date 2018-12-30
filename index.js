@@ -469,6 +469,7 @@ class Manager {
   }
 
   async reserveClient() {
+    // We allow "stoppingInProgress" exception so that queries can cleanup properly.
     if (this._stopped && !this._stoppingInProgress) {
       // This method is returning a client, so we throw.
       throw new Error("Manager has been stopped.");
@@ -485,6 +486,7 @@ class Manager {
   }
 
   async reserveClientForQuery(queryId) {
+    // We allow "stoppingInProgress" exception so that queries can cleanup properly.
     if (this._stopped && !this._stoppingInProgress) {
       // This method is returning a client, so we throw.
       throw new Error("Manager has been stopped.");
@@ -498,6 +500,7 @@ class Manager {
   }
 
   async releaseClient(client) {
+    // We allow "stoppingInProgress" exception so that queries can cleanup properly.
     if (this._stopped && !this._stoppingInProgress) {
       // This method is not returning anything, so we just ignore the call.
       return;
@@ -601,6 +604,14 @@ class Manager {
   }
 
   async query(query, options) {
+    if (this._stopped) {
+      // This method is returning a handle, so we throw.
+      throw new Error("Manager has been stopped.");
+    }
+    if (!this._started) {
+      throw new Error("Manager has not been started.");
+    }
+
     options = Object.assign({}, DEFAULT_QUERY_OPTIONS, options);
 
     const queryId = await randomId();
