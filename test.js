@@ -17,6 +17,24 @@ const manager = new Manager({
   connectionConfig: CONNECTION_CONFIG,
 });
 
+manager.on('start', () => {
+  console.log(new Date(), 'manager start');
+});
+
+manager.on('error', (error, client) => {
+  console.log(new Date(), 'manager error', error);
+});
+
+manager.on('end', (error) => {
+  console.log(new Date(), 'manager end', error);
+});
+
+manager.on('connect', (client) => {
+  client.on('notice', (notice) => {
+    console.warn(new Date(), notice.message, Object.assign({}, notice));
+  });
+});
+
 async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -70,6 +88,10 @@ async function sleep(ms) {
 
   for (const query of queries) {
     const handle = await manager.query(query, {uniqueColumn: '_id', mode: 'changed'});
+
+    handle.on('start', () => {
+      console.log(new Date(), 'query start', handle.queryId);
+    });
 
     handle.on('ready', () => {
       console.log(new Date(), 'query ready', handle.queryId);

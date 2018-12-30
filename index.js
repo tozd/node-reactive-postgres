@@ -37,7 +37,6 @@ class ReactiveQueryHandle extends EventEmitter {
 
     this._started = false;
     this._stopped = false;
-    this._stoppingInProgress = false;
     this._dirty = false;
     this._batch = [];
     this._readyPending = false;
@@ -54,8 +53,10 @@ class ReactiveQueryHandle extends EventEmitter {
 
     this._started = true;
 
-    const client = await this.manager.reserveClientForQuery(this.queryId);
+    let client = null;
     try {
+      client = await this.manager.reserveClientForQuery(this.queryId);
+
       const {rows: queryExplanation} = await client.query({text: `EXPLAIN (FORMAT JSON) (${this.query})`, rowMode: 'array'});
 
       this._sources = [...this._extractSources(queryExplanation)].sort();
@@ -99,8 +100,12 @@ class ReactiveQueryHandle extends EventEmitter {
       throw error;
     }
     finally {
-      await this.manager.releaseClient(client);
+      if (client) {
+        await this.manager.releaseClient(client);
+      }
     }
+
+    this.emit('start');
   }
 
   async stop() {
@@ -113,16 +118,18 @@ class ReactiveQueryHandle extends EventEmitter {
 
     this._stopped = true;
 
-    const sourcesTriggers = this._sources.map((source) => {
-      return `
-        DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_insert" ON "${source}";
-        DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_update" ON "${source}";
-        DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_delete" ON "${source}";
-      `;
-    }).join('\n');
-
-    const client = await this.manager.reserveClientForQuery(this.queryId);
+    let client = null;
     try {
+      const sourcesTriggers = this._sources.map((source) => {
+        return `
+          DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_insert" ON "${source}";
+          DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_update" ON "${source}";
+          DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_delete" ON "${source}";
+        `;
+      }).join('\n');
+
+      client = await this.manager.reserveClientForQuery(this.queryId);
+
       await client.query(`
         START TRANSACTION;
         UNLISTEN "${this.queryId}_query_ready";
@@ -140,7 +147,9 @@ class ReactiveQueryHandle extends EventEmitter {
       throw error;
     }
     finally {
-      await this.manager.releaseClient(client);
+      if (client) {
+        await this.manager.releaseClient(client);
+      }
     }
 
     this.emit('end');
@@ -412,12 +421,15 @@ class ReactiveQueryHandle extends EventEmitter {
   }
 }
 
-class Manager {
+class Manager extends EventEmitter {
   constructor(options={}) {
+    super();
+
     this.options = Object.assign({}, DEFAULT_MANAGER_OPTIONS, options);
 
     this._started = false;
     this._stopped = false;
+    this._stoppingInProgress = false;
     this._handlesForQuery = new Map();
     this._clientsForQuery = new Map();
   }
@@ -432,15 +444,27 @@ class Manager {
 
     this._started = true;
 
-    const client = await this.reserveClient();
+    let client = null;
     try {
+      client = await this.reserveClient();
+
       await client.query(`
         CREATE EXTENSION IF NOT EXISTS hstore;
       `);
     }
-    finally {
-      this.releaseClient(client);
+    catch (error) {
+      this._stopped = true;
+      this.emit('error', error);
+      this.emit('end', error);
+      throw error;
     }
+    finally {
+      if (client) {
+        this.releaseClient(client);
+      }
+    }
+
+    this.emit('start');
   }
 
   async stop() {
@@ -454,18 +478,31 @@ class Manager {
     this._stopped = true;
     this._stoppingInProgress = true;
 
-    while (this._handlesForQuery.size) {
-      for (const [queryId, handle] of this._handlesForQuery.entries()) {
-        await handle.stop();
-        this._handlesForQuery.delete(queryId);
+    try {
+      while (this._handlesForQuery.size) {
+        for (const [queryId, handle] of this._handlesForQuery.entries()) {
+          await handle.stop();
+        }
       }
+
+      this._stoppingInProgress = false;
+
+      // They should all be removed now through "end" callbacks when we
+      // called "stop" on all handles.
+      assert(this._handlesForQuery.size === 0);
+      assert(this._clientsForQuery.size === 0);
+
+      // TODO: End all clients.
+      await this._client.end();
+
+    }
+    catch (error) {
+      this.emit('error', error);
+      this.emit('end', error);
+      throw error;
     }
 
-    this._stoppingInProgress = false;
-
-    // TODO: Implement.
-
-    await this._client.end();
+    this.emit('end');
   }
 
   async reserveClient() {
@@ -536,11 +573,10 @@ class Manager {
     const client = new Client(this.options.connectionConfig);
 
     client.on('error', (error) => {
-      // TODO: Redirect to all queries on this client and stop them.
-      console.error("PostgreSQL client error.", error);
+      this.emit('error', error, client);
     });
-    client.on('notice', (notice) => {
-      console.warn("PostgreSQL notice.", notice.message, Object.assign({}, notice));
+    client.on('end', () => {
+      this.emit('disconnect', client);
     });
     client.on('notification', (message) => {
       this._onNotification(message);
@@ -599,6 +635,8 @@ class Manager {
         END
       $$;
     `);
+
+    this.emit('connect', client);
 
     return client;
   }
