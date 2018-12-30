@@ -330,8 +330,7 @@ class ReactiveQueryHandle extends EventEmitter {
     }
   }
 
-  async _onSourceChanged(payload) {
-    // TODO: Implement debounce.
+  async refresh() {
     const client = await this.manager.reserveClientForQuery(this.queryId);
     try {
       client.query(`
@@ -344,6 +343,11 @@ class ReactiveQueryHandle extends EventEmitter {
     finally {
       await this.manager.releaseClient(client);
     }
+  }
+
+  async _onSourceChanged(payload) {
+    // TODO: Implement debounce.
+    await this.refresh();
   }
 
   _extractSources(queryExplanation) {
