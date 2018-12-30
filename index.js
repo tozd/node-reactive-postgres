@@ -179,6 +179,15 @@ class ReactiveQueryHandle extends EventEmitter {
     }
   }
 
+  async flush() {
+    if (this.options.mode === 'id') {
+      this._processBatchIdMode();
+    }
+    else {
+      await this._processBatchFetchMode();
+    }
+  }
+
   _processBatchIdMode() {
     while (this._batch.length) {
       const payload = this._batch.shift();
