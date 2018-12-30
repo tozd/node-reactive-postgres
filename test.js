@@ -104,6 +104,7 @@ async function sleep(ms) {
 
   await sleep(1000);
 
+  let commentIds = [];
   for (let i = 5; i < 7; i++) {
     result = await pool.query(`
       INSERT INTO posts ("body") VALUES($1) RETURNING _id;
@@ -112,11 +113,27 @@ async function sleep(ms) {
     const postId = result.rows[0]._id;
 
     for (let j = 0; j < 10; j++) {
-      await pool.query(`
-        INSERT INTO comments ("postId", "body") VALUES($1, $2);
+      result = await pool.query(`
+        INSERT INTO comments ("postId", "body") VALUES($1, $2) RETURNING _id;
       `, [postId, {'title': `Comment title ${j}`}]);
+
+      commentIds.push(result.rows[0]._id);
     }
   }
+
+  await sleep(1000);
+
+  for (let i = 0; i < commentIds.length; i++) {
+    await pool.query(`
+      UPDATE comments SET "body"=$1 WHERE "_id"=$2;
+    `, [{'title': `Comment new title ${i}`}, commentIds[i]]);
+  }
+
+  await sleep(1000);
+
+  await pool.query(`
+    DELETE FROM comments WHERE "_id"=ANY($1);
+  `, [commentIds]);
 
   await sleep(1000);
 
