@@ -45,6 +45,8 @@ class ReactiveQueryHandle extends Readable {
     this._throttleTimestamp = 0;
     this._throttleTimeout = null;
     this._streamQueue = [];
+    this._streamPaused = false;
+    this._sourceChangedWhileStreamPaused = false;
   }
 
   async start() {
@@ -457,6 +459,11 @@ class ReactiveQueryHandle extends Readable {
       this._throttleTimestamp = timestamp;
     }
 
+    if (this._streamPaused) {
+      this._sourceChangedWhileStreamPaused = true;
+      return;
+    }
+
     const remaining = this.options.refreshThrottleWait - (timestamp - this._throttleTimestamp);
     if (remaining <= 0 || remaining > this.options.refreshThrottleWait) {
       if (this._throttleTimeout) {
@@ -499,10 +506,12 @@ class ReactiveQueryHandle extends Readable {
 
   _read(size) {
     (async () => {
+      await this._resumeStream();
       if (!this._started) {
         this._isStream = true;
         await this.start();
       }
+      this._streamFlush();
     })().catch((error) => {
       this.emit('error', error);
     });
@@ -520,10 +529,31 @@ class ReactiveQueryHandle extends Readable {
 
   _streamPush(data) {
     this._streamQueue.push(data);
-    while (this._streamQueue.length) {
+    this._streamFlush();
+  }
+
+  _streamFlush() {
+    while (!this._streamPaused && this._streamQueue.length) {
       const chunk = this._streamQueue.shift();
-      // TODO: Implement backpressure.
-      this.push(chunk);
+      if (!this.push(chunk)) {
+        this._pauseStream();
+      }
+    }
+  }
+
+  _pauseStream() {
+    this._streamPaused = true;
+    if (this._throttleTimeout) {
+      clearTimeout(this._throttleTimeout);
+      this._throttleTimeout = null;
+    }
+  }
+
+  async _resumeStream() {
+    this._streamPaused = false;
+    if (this._sourceChangedWhileStreamPaused) {
+      this._sourceChangedWhileStreamPaused = false;
+      await this._onSourceChanged(null);
     }
   }
 }
