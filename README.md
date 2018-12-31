@@ -50,7 +50,8 @@ over them. You should initialize one instance of it and use it for your reactive
 ### `ReactiveQueryHandle`
 
 Reactive query handles can be used as an [`EventEmitter`](https://nodejs.org/api/events.html#events_class_eventemitter)
-or a [`Readable` stream](https://nodejs.org/api/stream.html#stream_readable_streams).
+or a [`Readable` stream](https://nodejs.org/api/stream.html#stream_readable_streams),
+but not both.
 
 Constructor is seen as private and you should not create instances of `ReactiveQueryHandle`
 yourself but always through `Manager`'s `query` method. The method also passes all options
