@@ -46,7 +46,7 @@ class ReactiveQueryHandle extends Readable {
     this._throttleTimeout = null;
     this._streamQueue = [];
     this._streamPaused = false;
-    this._sourceChangedWhileStreamPaused = false;
+    this._sourceChangedPending = false;
   }
 
   async start() {
@@ -449,7 +449,7 @@ class ReactiveQueryHandle extends Readable {
     `);
   }
 
-  async _onSourceChanged(payload) {
+  _onSourceChanged(payload) {
     if (!this._started || this._stopped) {
       return;
     }
@@ -459,8 +459,11 @@ class ReactiveQueryHandle extends Readable {
       this._throttleTimestamp = timestamp;
     }
 
-    if (this._streamPaused) {
-      this._sourceChangedWhileStreamPaused = true;
+    // If stream is paused or if queue is not empty, we set a flag to
+    // postpone processing this source changed event. We retry once
+    // stream is not paused anymore or once we emptied the queue.
+    if (this._streamPaused || this._streamQueue.length) {
+      this._sourceChangedPending = true;
       return;
     }
 
@@ -471,13 +474,17 @@ class ReactiveQueryHandle extends Readable {
         this._throttleTimeout = null;
       }
       this._throttleTimestamp = timestamp;
-      await this.refresh();
+      this.refresh().catch((error) => {
+        this.emit('error', error);
+      });
     }
     else if (!this._throttleTimeout) {
       this._throttleTimeout = setTimeout(async () => {
         this._throttleTimestamp = 0;
         this._throttleTimeout = null;
-        await this.refresh();
+        this.refresh().catch((error) => {
+          this.emit('error', error);
+        });
       }, remaining);
     }
   }
@@ -506,11 +513,16 @@ class ReactiveQueryHandle extends Readable {
 
   _read(size) {
     (async () => {
-      await this._resumeStream();
+      // We can resume the stream now. This does not necessary mean we also start processing
+      // source changed events again, because the queue might not yet be empty.
+      this._resumeStream();
       if (!this._started) {
         this._isStream = true;
         await this.start();
       }
+      // We try to get the queue to be empty. If this happens, we will retry processing
+      // a source changed event (because stream is also not paused anymore),
+      // if it happened in the past.
       this._streamFlush();
     })().catch((error) => {
       this.emit('error', error);
@@ -539,6 +551,13 @@ class ReactiveQueryHandle extends Readable {
         this._pauseStream();
       }
     }
+
+    if (!this._streamPaused) {
+      // Stream is not paused which means the queue is empty. We retry processing a
+      // source changed event, if it happened in the past but we postponed it.
+      // We reuse "_resumeStream" for this purpose.
+      this._resumeStream();
+    }
   }
 
   _pauseStream() {
@@ -549,11 +568,13 @@ class ReactiveQueryHandle extends Readable {
     }
   }
 
-  async _resumeStream() {
+  _resumeStream() {
     this._streamPaused = false;
-    if (this._sourceChangedWhileStreamPaused) {
-      this._sourceChangedWhileStreamPaused = false;
-      await this._onSourceChanged(null);
+    // Stream is not paused anymore, retry processing a source
+    // changed event, if it happened while we were paused.
+    if (this._sourceChangedPending) {
+      this._sourceChangedPending = false;
+      this._onSourceChanged(null);
     }
   }
 }
@@ -860,13 +881,19 @@ class Manager extends EventEmitter {
     const payload = JSON.parse(message.payload);
 
     if (notificationType === 'query_ready') {
-      handle._onQueryReady(payload);
+      handle._onQueryReady(payload).catch((error) => {
+        this.emit('error', error);
+      });
     }
     else if (notificationType === 'query_changed') {
-      handle._onQueryChanged(payload);
+      handle._onQueryChanged(payload).catch((error) => {
+        this.emit('error', error);
+      });
     }
     else if (notificationType === 'query_refreshed') {
-      handle._onQueryRefreshed(payload);
+      handle._onQueryRefreshed(payload).catch((error) => {
+        this.emit('error', error);
+      });
     }
     else if (notificationType === 'source_changed') {
       handle._onSourceChanged(payload);
