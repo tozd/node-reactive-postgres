@@ -27,10 +27,11 @@ const NOTIFICATION_REGEX = /^(.+)_(query_ready|query_changed|query_refreshed|sou
 
 // TODO: Implement stream as well.
 class ReactiveQueryHandle extends EventEmitter {
-  constructor(manager, queryId, query, options) {
+  constructor(manager, client, queryId, query, options) {
     super();
 
     this.manager = manager;
+    this.client = client;
     this.queryId = queryId;
     this.query = query;
     this.options = options;
@@ -53,11 +54,8 @@ class ReactiveQueryHandle extends EventEmitter {
 
     this._started = true;
 
-    let client = null;
     try {
-      client = await this.manager.reserveClientForQuery(this.queryId);
-
-      const {rows: queryExplanation} = await client.query({text: `EXPLAIN (FORMAT JSON) (${this.query})`, rowMode: 'array'});
+      const {rows: queryExplanation} = await this.client.query({text: `EXPLAIN (FORMAT JSON) (${this.query})`, rowMode: 'array'});
 
       this._sources = [...this._extractSources(queryExplanation)].sort();
 
@@ -72,15 +70,20 @@ class ReactiveQueryHandle extends EventEmitter {
         `;
       }).join('\n');
 
-      // We create a temporary materialized view based on a query, but without data, just
-      // structure. We add triggers to notify the client about changes to sources and
-      // the materialized view. We then refresh the materialized view for the first time.
-      await client.query(`
+      await this.manager.client.query(`
         START TRANSACTION;
         LISTEN "${this.queryId}_query_ready";
         LISTEN "${this.queryId}_query_changed";
         LISTEN "${this.queryId}_query_refreshed";
         LISTEN "${this.queryId}_source_changed";
+        COMMIT;
+      `);
+
+      // We create a temporary materialized view based on a query, but without data, just
+      // structure. We add triggers to notify the client about changes to sources and
+      // the materialized view. We then refresh the materialized view for the first time.
+      await this.client.query(`
+        START TRANSACTION;
         CREATE TEMPORARY MATERIALIZED VIEW "${this.queryId}_view" AS ${this.query} WITH NO DATA;
         CREATE UNIQUE INDEX "${this.queryId}_view_id" ON "${this.queryId}_view" ("${this.options.uniqueColumn}");
         ${sourcesTriggers}
@@ -99,11 +102,6 @@ class ReactiveQueryHandle extends EventEmitter {
       this.emit('end', error);
       throw error;
     }
-    finally {
-      if (client) {
-        this.manager.releaseClient(client);
-      }
-    }
 
     this.emit('start');
   }
@@ -118,7 +116,6 @@ class ReactiveQueryHandle extends EventEmitter {
 
     this._stopped = true;
 
-    let client = null;
     try {
       const sourcesTriggers = this._sources.map((source) => {
         return `
@@ -128,14 +125,17 @@ class ReactiveQueryHandle extends EventEmitter {
         `;
       }).join('\n');
 
-      client = await this.manager.reserveClientForQuery(this.queryId);
-
-      await client.query(`
+      await this.manager.client.query(`
         START TRANSACTION;
         UNLISTEN "${this.queryId}_query_ready";
         UNLISTEN "${this.queryId}_query_changed";
         UNLISTEN "${this.queryId}_query_refreshed";
         UNLISTEN "${this.queryId}_source_changed";
+        COMMIT;
+      `);
+
+      await this.client.query(`
+        START TRANSACTION;
         ${sourcesTriggers}
         DROP MATERIALIZED VIEW IF EXISTS "${this.queryId}_view" CASCADE;
         COMMIT;
@@ -145,11 +145,6 @@ class ReactiveQueryHandle extends EventEmitter {
       this.emit('error', error);
       this.emit('end', error);
       throw error;
-    }
-    finally {
-      if (client) {
-        this.manager.releaseClient(client);
-      }
     }
 
     this.emit('end');
@@ -277,57 +272,51 @@ class ReactiveQueryHandle extends EventEmitter {
     // this is true because we are fetching inside one refresh.
 
     const rows = new Map();
-    const client = await this.manager.reserveClientForQuery(this.queryId);
-    try {
-      if (this.options.mode === 'changed') {
-        const updateColumns = '"' + [...columnsToFetchForUpdate].join('", "') + '"';
+    if (this.options.mode === 'changed') {
+      const updateColumns = '"' + [...columnsToFetchForUpdate].join('", "') + '"';
 
-        // We do one query for inserted rows.
-        let response = await client.query({
-          text: `
-            SELECT * FROM "${this.queryId}_view" WHERE "${this.options.uniqueColumn}"=ANY($1);
-          `,
-          values: [[...idsToFetchForInsert]],
-          types: this.options.types,
-        });
+      // We do one query for inserted rows.
+      let response = await this.client.query({
+        text: `
+          SELECT * FROM "${this.queryId}_view" WHERE "${this.options.uniqueColumn}"=ANY($1);
+        `,
+        values: [[...idsToFetchForInsert]],
+        types: this.options.types,
+      });
 
-        for (const row of response.rows) {
-          rows.set(row[this.options.uniqueColumn], row);
-        }
-
-        // And we do one query for updated rows. Here we might be able to fetch less columns.
-        response = await client.query({
-          text: `
-            SELECT ${updateColumns} FROM "${this.queryId}_view" WHERE "${this.options.uniqueColumn}"=ANY($1);
-          `,
-          values: [[...idsToFetchForUpdate]],
-          types: this.options.types,
-        });
-
-        for (const row of response.rows) {
-          rows.set(row[this.options.uniqueColumn], row);
-        }
+      for (const row of response.rows) {
+        rows.set(row[this.options.uniqueColumn], row);
       }
-      else if (this.options.mode === 'full') {
-        // We can just do one query.
-        const response = await client.query({
-          text: `
-            SELECT * FROM "${this.queryId}_view" WHERE "${this.options.uniqueColumn}"=ANY($1);
-          `,
-          values: [[...idsToFetchForInsert, ...idsToFetchForUpdate]],
-          types: this.options.types,
-        });
 
-        for (const row of response.rows) {
-          rows.set(row[this.options.uniqueColumn], row);
-        }
-      }
-      else {
-        assert.fail(`Unexpected query mode '${this.options.mode}'.`);
+      // And we do one query for updated rows. Here we might be able to fetch less columns.
+      response = await this.client.query({
+        text: `
+          SELECT ${updateColumns} FROM "${this.queryId}_view" WHERE "${this.options.uniqueColumn}"=ANY($1);
+        `,
+        values: [[...idsToFetchForUpdate]],
+        types: this.options.types,
+      });
+
+      for (const row of response.rows) {
+        rows.set(row[this.options.uniqueColumn], row);
       }
     }
-    finally {
-      this.manager.releaseClient(client);
+    else if (this.options.mode === 'full') {
+      // We can just do one query.
+      const response = await this.client.query({
+        text: `
+          SELECT * FROM "${this.queryId}_view" WHERE "${this.options.uniqueColumn}"=ANY($1);
+        `,
+        values: [[...idsToFetchForInsert, ...idsToFetchForUpdate]],
+        types: this.options.types,
+      });
+
+      for (const row of response.rows) {
+        rows.set(row[this.options.uniqueColumn], row);
+      }
+    }
+    else {
+      assert.fail(`Unexpected query mode '${this.options.mode}'.`);
     }
 
     for (const payload of batch) {
@@ -375,18 +364,12 @@ class ReactiveQueryHandle extends EventEmitter {
       throw new Error("Query has not been started.");
     }
 
-    const client = await this.manager.reserveClientForQuery(this.queryId);
-    try {
-      client.query(`
-        START TRANSACTION;
-        REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
-        NOTIFY "${this.queryId}_query_refreshed", '{}';
-        COMMIT;
-      `);
-    }
-    finally {
-      this.manager.releaseClient(client);
-    }
+    this.client.query(`
+      START TRANSACTION;
+      REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
+      NOTIFY "${this.queryId}_query_refreshed", '{}';
+      COMMIT;
+    `);
   }
 
   async _onSourceChanged(payload) {
@@ -422,7 +405,7 @@ class ReactiveQueryHandle extends EventEmitter {
 }
 
 // TODO: Disconnect idle clients after some time.
-//       Idle meaning that they do not have any reactive query active.
+//       Idle meaning that they do not have any reactive queries using them.
 class Manager extends EventEmitter {
   constructor(options={}) {
     super();
@@ -433,15 +416,17 @@ class Manager extends EventEmitter {
       throw new Error("\"maxConnections\" option has to be larger than 0.")
     }
 
+    // Manager's client used for notifications. Queries use their
+    // own set of clients from a client pool, "this._clients".
+    this.client = null;
+
     this._started = false;
     this._stopped = false;
-    this._stoppingInProgress = false;
+    // Map between a "queryId" and a reactive query handle.
     this._handlesForQuery = new Map();
-    this._clientsForQuery = new Map();
-    this._clientsUtilization = new Map();
+    // Map between a client and a number of reactive queries using it.
     this._clients = new Map();
     this._pendingClients = [];
-    this._reservedClients = new Set();
   }
 
   async start() {
@@ -454,11 +439,24 @@ class Manager extends EventEmitter {
 
     this._started = true;
 
-    let client = null;
     try {
-      client = await this.reserveClient();
+      this.client = new Client(this.options.connectionConfig);
 
-      await client.query(`
+      this.client.on('error', (error) => {
+        this.emit('error', error, this.client);
+      });
+      this.client.on('end', () => {
+        this.emit('disconnect', this.client);
+      });
+      this.client.on('notification', (message) => {
+        this._onNotification(message);
+      });
+
+      await this.client.connect();
+
+      this.emit('connect', this.client);
+
+      await this.client.query(`
         CREATE EXTENSION IF NOT EXISTS hstore;
       `);
     }
@@ -467,11 +465,6 @@ class Manager extends EventEmitter {
       this.emit('error', error);
       this.emit('end', error);
       throw error;
-    }
-    finally {
-      if (client) {
-        this.releaseClient(client);
-      }
     }
 
     this.emit('start');
@@ -486,7 +479,6 @@ class Manager extends EventEmitter {
     }
 
     this._stopped = true;
-    this._stoppingInProgress = true;
 
     try {
       while (this._handlesForQuery.size) {
@@ -496,37 +488,21 @@ class Manager extends EventEmitter {
         }
       }
 
-      this._stoppingInProgress = false;
-
       // They should all be removed now through "end" callbacks when we
       // called "stop" on all handles.
       assert(this._handlesForQuery.size === 0, "\"handlesForQuery\" should be empty.");
-      assert(this._clientsForQuery.size === 0, "\"clientsForQuery\" should be empty.");
 
       // Disconnect all clients.
-      while (this._pendingClients.size) {
-        for (const [clientPromise, queue] of this._pendingClients.entries()) {
-          while (queue.length) {
-            const q = queue.shift();
-            q(new Error("Manager stopping."));
-          }
-
-          const client = await clientPromise;
-          await client.end();
-          this._pendingClients.delete(clientPromise);
-        }
-      }
       while (this._clients.size) {
-        for (const [client, queue] of this._clients.entries()) {
-          while (queue.length) {
-            const q = queue.shift();
-            q(new Error("Manager stopping."));
-          }
+        for (const [client, utilization] of this._clients.entries()) {
+          assert(utilization === 0, "Utilization of a client should be zero.");
 
           await client.end();
           this._clients.delete(client);
         }
       }
+
+      await this.client.end();
     }
     catch (error) {
       this.emit('error', error);
@@ -537,9 +513,8 @@ class Manager extends EventEmitter {
     this.emit('end');
   }
 
-  async reserveClient() {
-    // We allow "stoppingInProgress" exception so that queries can cleaned up properly.
-    if (this._stopped && !this._stoppingInProgress) {
+  async getClient() {
+    if (this._stopped) {
       // This method is returning a client, so we throw.
       throw new Error("Manager has been stopped.");
     }
@@ -551,7 +526,7 @@ class Manager extends EventEmitter {
     if (this._clients.size + this._pendingClients.length < this.options.maxConnections) {
       const clientPromise = this._createClient();
       clientPromise.then((client) => {
-        this._clients.set(client, []);
+        this._clients.set(client, 0);
         const index = this._pendingClients.indexOf(clientPromise);
         if (index >= 0) {
           this._pendingClients.splice(index, 1);
@@ -564,141 +539,22 @@ class Manager extends EventEmitter {
 
     assert(this._clients.size > 0, "\"maxConnections\" has to be larger than 0.");
 
-    // Find clients with the least number of active queries. We want primarily
+    // Find clients with the least number of active queries. We want
     // to distribute all queries between all clients equally.
-    let reasonableClients = [];
+    let availableClients = [];
     let lowestUtilization = Number.POSITIVE_INFINITY;
-    for (const client of this._clients.keys()) {
-        const utilization = this._clientsUtilization.get(client) || 0;
+    for (const [client, utilization] of this._clients.entries()) {
         if (utilization < lowestUtilization) {
           lowestUtilization = utilization;
-          reasonableClients = [client];
+          availableClients = [client];
         }
         else if (utilization === lowestUtilization) {
-          reasonableClients.push(client);
+          availableClients.push(client);
         }
     }
 
-    const notReservedClients = [];
-    for (const client of reasonableClients) {
-      if (!this._reservedClients.has(client)) {
-        notReservedClients.push(client);
-      }
-    }
-
-    // We have clients which are not reserved. Let's pick one among them.
-    if (notReservedClients.length) {
-      const client = notReservedClients[Math.floor(Math.random() * notReservedClients.length)];
-      this._reservedClients.add(client);
-      return client;
-    }
-
-    let leastUsedClient = null;
-    let leastUsedQueue = null;
-    let leastUsedQueueLength = Number.POSITIVE_INFINITY;
-    // Find a client with the shortest queue.
-    for (const client of reasonableClients) {
-      const queue = this._clients.get(client);
-      if (queue.length < leastUsedQueueLength) {
-        leastUsedQueueLength = queue.length;
-        leastUsedClient = client;
-        leastUsedQueue = queue;
-      }
-    }
-
-    return new Promise((resolve, reject) => {
-      leastUsedQueue.push((error) => {
-        if (error) {
-          reject(error);
-        }
-        // We allow "stoppingInProgress" exception so that queries can cleaned up properly.
-        else if (this._stopped && !this._stoppingInProgress) {
-          reject(new Error("Manager stopping."));
-        }
-        else {
-          assert(!this._reservedClients.has(leastUsedClient), "Client is already reserved.");
-          this._reservedClients.add(leastUsedClient);
-          resolve(leastUsedClient);
-        }
-      });
-    });
-  }
-
-  async reserveClientForQuery(queryId) {
-    // We allow "stoppingInProgress" exception so that queries can cleaned up properly.
-    if (this._stopped && !this._stoppingInProgress) {
-      // This method is returning a client, so we throw.
-      throw new Error("Manager has been stopped.");
-    }
-    if (!this._started) {
-      throw new Error("Manager has not been started.");
-    }
-
-    const client = this._clientsForQuery.get(queryId);
-
-    if (!this._reservedClients.has(client)) {
-      this._reservedClients.add(client);
-      return client;
-    }
-
-    const queue = this._clients.get(client);
-
-    return new Promise((resolve, reject) => {
-      queue.push((error) => {
-        if (error) {
-          reject(error);
-        }
-        // We allow "stoppingInProgress" exception so that queries can cleaned up properly.
-        else if (this._stopped && !this._stoppingInProgress) {
-          reject(new Error("Manager stopping."));
-        }
-        else {
-          assert(!this._reservedClients.has(client), "Client is already reserved.");
-          this._reservedClients.add(client);
-          resolve(client);
-        }
-      });
-    });
-  }
-
-  releaseClient(client) {
-    // We allow "stoppingInProgress" exception so that queries can cleaned up properly.
-    if (this._stopped && !this._stoppingInProgress) {
-      // This method is not returning anything, so we just ignore the call.
-      return;
-    }
-    if (!this._started) {
-      throw new Error("Manager has not been started.");
-    }
-
-    this._reservedClients.delete(client);
-
-    // We provide the client to the next reservation.
-    const queue = this._clients.get(client);
-    const q = queue.shift();
-    if (q) {
-      q();
-    }
-  }
-
-  _setClientForQuery(client, queryId) {
-    this._clientsForQuery.set(queryId, client);
-    const utilization = this._clientsUtilization.get(client) || 0;
-    this._clientsUtilization.set(client, utilization + 1);
-  }
-
-  _deleteClientForQuery(queryId) {
-    const client = this._clientsForQuery.get(queryId);
-    if (client) {
-      this._clientsForQuery.delete(queryId);
-      const utilization = this._clientsUtilization.get(client);
-      if (utilization > 1) {
-        this._clientsUtilization.set(client, utilization - 1);
-      }
-      else {
-        this._clientsUtilization.delete(client);
-      }
-    }
+    // We pick a random client from available clients.
+    return availableClients[Math.floor(Math.random() * availableClients.length)];
   }
 
   _setHandleForQuery(handle, queryId) {
@@ -713,6 +569,14 @@ class Manager extends EventEmitter {
     this._handlesForQuery.delete(queryId);
   }
 
+  _useClient(client) {
+    this._clients.set(client, this._clients.get(client) + 1);
+  }
+
+  _releaseClient(client) {
+    this._clients.set(client, this._clients.get(client) - 1);
+  }
+
   async _createClient() {
     const client = new Client(this.options.connectionConfig);
 
@@ -721,9 +585,6 @@ class Manager extends EventEmitter {
     });
     client.on('end', () => {
       this.emit('disconnect', client);
-    });
-    client.on('notification', (message) => {
-      this._onNotification(message);
     });
 
     await client.connect();
@@ -797,20 +658,16 @@ class Manager extends EventEmitter {
     options = Object.assign({}, DEFAULT_QUERY_OPTIONS, options);
 
     const queryId = await randomId();
-    const client = await this.reserveClient();
-    try {
-      const handle = new ReactiveQueryHandle(this, queryId, query, options);
-      this._setClientForQuery(client, queryId);
-      this._setHandleForQuery(handle, queryId);
-      handle.once('end', (error) => {
-        this._deleteClientForQuery(queryId);
-        this._deleteHandleForQuery(queryId);
-      });
-      return handle;
-    }
-    finally {
-      this.releaseClient(client);
-    }
+    const client = await this.getClient();
+
+    const handle = new ReactiveQueryHandle(this, client, queryId, query, options);
+    this._setHandleForQuery(handle, queryId);
+    this._useClient(client);
+    handle.once('end', (error) => {
+      this._deleteHandleForQuery(queryId);
+      this._releaseClient(client);
+    });
+    return handle;
   }
 
   _onNotification(message) {
