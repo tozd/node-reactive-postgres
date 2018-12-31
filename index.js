@@ -17,7 +17,8 @@ const DEFAULT_QUERY_OPTIONS = {
   batchSize: 0,
   // Custom type parsers.
   types: null,
-  highWaterMark: 100,
+  // We have a low default value so that backpressure is quickly detected.
+  highWaterMark: 16,
   autoDestroy: false,
 };
 
