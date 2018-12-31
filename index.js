@@ -8,7 +8,7 @@ const {randomId} = require('./random');
 const DEFAULT_QUERY_OPTIONS = {
   // TODO: Allow multi-column unique index as well.
   uniqueColumn: 'id',
-  refreshDebounceWait: 100, // ms
+  refreshThrottleWait: 100, // ms
   // Can be "id", "changed", "full".
   mode: 'id',
   // When mode is "changed" or "full", in how large batches do we fetch data inside one refresh?
@@ -35,6 +35,8 @@ class ReactiveQueryHandle extends EventEmitter {
     this._batch = [];
     this._readyPending = false;
     this._sources = null;
+    this._throttleTimestamp = 0;
+    this._throttleTimeout = null;
   }
 
   async start() {
@@ -370,8 +372,27 @@ class ReactiveQueryHandle extends EventEmitter {
       return;
     }
 
-    // TODO: Implement debounce.
-    await this.refresh();
+    const timestamp = new Date().valueOf();
+    if (!this._throttleTimestamp) {
+      this._throttleTimestamp = timestamp;
+    }
+
+    const remaining = this.options.refreshThrottleWait - (timestamp - this._throttleTimestamp);
+    if (remaining <= 0 || remaining > this.options.refreshThrottleWait) {
+      if (this._throttleTimeout) {
+        clearTimeout(this._throttleTimeout);
+        this._throttleTimeout = null;
+      }
+      this._throttleTimestamp = timestamp;
+      await this.refresh();
+    }
+    else if (!this._throttleTimeout) {
+      this._throttleTimeout = setTimeout(async () => {
+        this._throttleTimestamp = 0;
+        this._throttleTimeout = null;
+        await this.refresh();
+      }, remaining);
+    }
   }
 
   _extractSources(queryExplanation) {
