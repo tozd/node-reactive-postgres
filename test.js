@@ -25,8 +25,8 @@ manager.on('error', (error, client) => {
   console.log(new Date(), 'manager error', error);
 });
 
-manager.on('end', (error) => {
-  console.log(new Date(), 'manager end', error);
+manager.on('stop', (error) => {
+  console.log(new Date(), 'manager stop', error);
 });
 
 manager.on('connect', (client) => {
@@ -97,8 +97,8 @@ async function sleep(ms) {
       console.log(new Date(), 'query ready', handle.queryId);
     });
 
-    handle.on('refreshed', () => {
-      console.log(new Date(), 'query refreshed', handle.queryId);
+    handle.on('refresh', () => {
+      console.log(new Date(), 'query refresh', handle.queryId);
     });
 
     handle.on('insert', (row) => {
@@ -117,8 +117,8 @@ async function sleep(ms) {
       console.log(new Date(), 'query error', handle.queryId, error);
     });
 
-    handle.on('end', (error) => {
-      console.log(new Date(), 'query end', handle.queryId, error);
+    handle.on('stop', (error) => {
+      console.log(new Date(), 'query stop', handle.queryId, error);
     });
 
     await handle.start();

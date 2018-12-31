@@ -94,7 +94,7 @@ class ReactiveQueryHandle extends EventEmitter {
     catch (error) {
       this._stopped = true;
       this.emit('error', error);
-      this.emit('end', error);
+      this.emit('stop', error);
       throw error;
     }
 
@@ -138,11 +138,11 @@ class ReactiveQueryHandle extends EventEmitter {
     }
     catch (error) {
       this.emit('error', error);
-      this.emit('end', error);
+      this.emit('stop', error);
       throw error;
     }
 
-    this.emit('end');
+    this.emit('stop');
   }
 
   async _onQueryReady(payload) {
@@ -161,7 +161,7 @@ class ReactiveQueryHandle extends EventEmitter {
     if (this._dirty) {
       this._dirty = false;
       await this._processBatch(true);
-      this.emit('refreshed');
+      this.emit('refresh');
       if (this._readyPending) {
         this._readyPending = false;
         this.emit('ready');
@@ -485,7 +485,7 @@ class Manager extends EventEmitter {
     catch (error) {
       this._stopped = true;
       this.emit('error', error);
-      this.emit('end', error);
+      this.emit('stop', error);
       throw error;
     }
 
@@ -528,11 +528,11 @@ class Manager extends EventEmitter {
     }
     catch (error) {
       this.emit('error', error);
-      this.emit('end', error);
+      this.emit('stop', error);
       throw error;
     }
 
-    this.emit('end');
+    this.emit('stop');
   }
 
   async getClient() {
@@ -685,7 +685,7 @@ class Manager extends EventEmitter {
     const handle = new this.options.handleClass(this, client, queryId, query, options);
     this._setHandleForQuery(handle, queryId);
     this._useClient(client);
-    handle.once('end', (error) => {
+    handle.once('stop', (error) => {
       this._deleteHandleForQuery(queryId);
       this._releaseClient(client);
     });
