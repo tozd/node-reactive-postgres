@@ -115,11 +115,9 @@ There are more methods, properties, and options available through the
 
 ##### 'readable' event `()`
 
-##### 'end' event `()`
+##### 'error' event `(error)`
 
 ##### 'close' event `()`
-
-##### 'error' event `(error)`
 
 ## Related projects
 
