@@ -1,6 +1,7 @@
 // docker run -d --name postgres -e POSTGRES_PASSWORD=pass -p 5432:5432 mitar/postgres:latest
 
 const {Pool} = require('pg');
+const through2 = require('through2');
 
 const {Manager} = require('./index');
 const {UNMISTAKABLE_CHARS} = require('./random');
@@ -10,6 +11,11 @@ const CONNECTION_CONFIG = {
   database: 'postgres',
   password: 'pass',
 };
+
+const jsonStream = through2.obj(function (chunk, encoding, callback) {
+  this.push(JSON.stringify(chunk, null, 2) + '\n');
+  callback();
+});
 
 const pool = new Pool(CONNECTION_CONFIG);
 
@@ -86,43 +92,57 @@ async function sleep(ms) {
     `SELECT "_id", "body", (SELECT array_to_json(COALESCE(array_agg(row_to_json(comments)), ARRAY[]::JSON[])) FROM comments WHERE comments."postId"=posts."_id") AS "comments" FROM posts`,
   ];
 
-  for (const query of queries) {
-    const handle = await manager.query(query, {uniqueColumn: '_id', mode: 'changed'});
+  let handle1 = await manager.query(queries[0], {uniqueColumn: '_id', mode: 'changed'});
 
-    handle.on('start', () => {
-      console.log(new Date(), 'query start', handle.queryId);
-    });
+  handle1.on('start', () => {
+    console.log(new Date(), 'query start', handle1.queryId);
+  });
 
-    handle.on('ready', () => {
-      console.log(new Date(), 'query ready', handle.queryId);
-    });
+  handle1.on('ready', () => {
+    console.log(new Date(), 'query ready', handle1.queryId);
+  });
 
-    handle.on('refresh', () => {
-      console.log(new Date(), 'query refresh', handle.queryId);
-    });
+  handle1.on('refresh', () => {
+    console.log(new Date(), 'query refresh', handle1.queryId);
+  });
 
-    handle.on('insert', (row) => {
-      console.log(new Date(), 'insert', handle.queryId, row);
-    });
+  handle1.on('insert', (row) => {
+    console.log(new Date(), 'insert', handle1.queryId, row);
+  });
 
-    handle.on('update', (row, columns) => {
-      console.log(new Date(), 'update', handle.queryId, row, columns);
-    });
+  handle1.on('update', (row, columns) => {
+    console.log(new Date(), 'update', handle1.queryId, row, columns);
+  });
 
-    handle.on('delete', (row) => {
-      console.log(new Date(), 'delete', handle.queryId, row);
-    });
+  handle1.on('delete', (row) => {
+    console.log(new Date(), 'delete', handle1.queryId, row);
+  });
 
-    handle.on('error', (error) => {
-      console.log(new Date(), 'query error', handle.queryId, error);
-    });
+  handle1.on('error', (error) => {
+    console.log(new Date(), 'query error', handle1.queryId, error);
+  });
 
-    handle.on('stop', (error) => {
-      console.log(new Date(), 'query stop', handle.queryId, error);
-    });
+  handle1.on('stop', (error) => {
+    console.log(new Date(), 'query stop', handle1.queryId, error);
+  });
 
-    await handle.start();
-  }
+  await handle1.start();
+
+  const handle2 = await manager.query(queries[1], {uniqueColumn: '_id', mode: 'changed'});
+
+  handle2.on('close', () => {
+    console.log(new Date(), 'query pipe close', handle2.queryId);
+  });
+
+  handle2.on('end', () => {
+    console.log(new Date(), 'query pipe end', handle2.queryId);
+  });
+
+  handle2.on('error', (error) => {
+    console.log(new Date(), 'query pipe error', handle2.queryId, error);
+  });
+
+  handle2.pipe(jsonStream).pipe(process.stdout);
 
   await sleep(1000);
 

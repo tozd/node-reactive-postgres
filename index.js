@@ -1,5 +1,6 @@
-const EventEmitter = require('events');
 const assert = require('assert');
+const EventEmitter = require('events');
+const {Readable} = require('stream');
 
 const {Client} = require('pg');
 
@@ -16,12 +17,17 @@ const DEFAULT_QUERY_OPTIONS = {
   batchSize: 0,
   // Custom type parsers.
   types: null,
+  highWaterMark: 100,
+  autoDestroy: false,
 };
 
-// TODO: Implement stream as well.
-class ReactiveQueryHandle extends EventEmitter {
+class ReactiveQueryHandle extends Readable {
   constructor(manager, client, queryId, query, options) {
-    super();
+    super({
+      highWaterMark: options.highWaterMark,
+      autoDestroy: options.autoDestroy,
+      objectMode: true,
+    });
 
     this.manager = manager;
     this.client = client;
@@ -29,6 +35,7 @@ class ReactiveQueryHandle extends EventEmitter {
     this.query = query;
     this.options = options;
 
+    this._isStream = false;
     this._started = false;
     this._stopped = false;
     this._dirty = false;
@@ -37,6 +44,7 @@ class ReactiveQueryHandle extends EventEmitter {
     this._sources = null;
     this._throttleTimestamp = 0;
     this._throttleTimeout = null;
+    this._streamQueue = [];
   }
 
   async start() {
@@ -93,15 +101,32 @@ class ReactiveQueryHandle extends EventEmitter {
     }
     catch (error) {
       this._stopped = true;
-      this.emit('error', error);
-      this.emit('stop', error);
+      if (!this._isStream) {
+        this.emit('error', error);
+        this.emit('stop', error);
+      }
       throw error;
     }
 
-    this.emit('start');
+    if (!this._isStream) {
+      this.emit('start');
+    }
   }
 
   async stop() {
+    if (this._isStream) {
+      await new Promise((resolve, reject) => {
+        this.once('close', resolve);
+        this.once('error', reject);
+        this.destroy();
+      });
+    }
+    else {
+      await this._stop();
+    }
+  }
+
+  async _stop() {
     if (this._stopped) {
       return;
     }
@@ -137,12 +162,16 @@ class ReactiveQueryHandle extends EventEmitter {
       `);
     }
     catch (error) {
-      this.emit('error', error);
-      this.emit('stop', error);
+      if (!this._isStream) {
+        this.emit('error', error);
+        this.emit('stop', error);
+      }
       throw error;
     }
 
-    this.emit('stop');
+    if (!this._isStream) {
+      this.emit('stop');
+    }
   }
 
   async _onQueryReady(payload) {
@@ -161,10 +190,20 @@ class ReactiveQueryHandle extends EventEmitter {
     if (this._dirty) {
       this._dirty = false;
       await this._processBatch(true);
-      this.emit('refresh');
+      if (this._isStream) {
+        this._streamPush({op: 'refresh'});
+      }
+      else {
+        this.emit('refresh');
+      }
       if (this._readyPending) {
         this._readyPending = false;
-        this.emit('ready');
+        if (this._isStream) {
+          this._streamPush({op: 'ready'});
+        }
+        else {
+          this.emit('ready');
+        }
       }
     }
   }
@@ -221,14 +260,34 @@ class ReactiveQueryHandle extends EventEmitter {
       const row = {};
       row[this.options.uniqueColumn] = payload.id;
 
+      if (this._isStream) {
+        delete payload.id;
+        payload.row = row;
+      }
+
       if (payload.op === 'insert') {
-        this.emit('insert', row);
+        if (this._isStream) {
+          this._streamPush(payload);
+        }
+        else {
+          this.emit('insert', row);
+        }
       }
       else if (payload.op === 'update') {
-        this.emit('update', row, payload.columns);
+        if (this._isStream) {
+          this._streamPush(payload);
+        }
+        else {
+          this.emit('update', row, payload.columns);
+        }
       }
       else if (payload.op === 'delete') {
-        this.emit('delete', row);
+        if (this._isStream) {
+          this._streamPush(payload);
+        }
+        else {
+          this.emit('delete', row);
+        }
       }
       else {
         assert.fail(`Unexpected query changed op '${payload.op}'.`);
@@ -320,7 +379,14 @@ class ReactiveQueryHandle extends EventEmitter {
         // It could happen that row was deleted in meantime and we could not fetch it.
         // We do not do anything for now and leave it to a future notification to handle this.
         if (row) {
-          this.emit('insert', row);
+          if (this._isStream) {
+            delete payload.id;
+            payload.row = row;
+            this._streamPush(payload);
+          }
+          else {
+            this.emit('insert', row);
+          }
         }
       }
       else if (payload.op === 'update') {
@@ -336,13 +402,27 @@ class ReactiveQueryHandle extends EventEmitter {
               delete row[key];
             }
           }
-          this.emit('update', row, payload.columns);
+          if (this._isStream) {
+            delete payload.id;
+            payload.row = row;
+            this._streamPush(payload);
+          }
+          else {
+            this.emit('update', row, payload.columns);
+          }
         }
       }
       else if (payload.op === 'delete') {
         const row = {};
         row[this.options.uniqueColumn] = payload.id;
-        this.emit('delete', row);
+        if (this._isStream) {
+          delete payload.id;
+          payload.row = row;
+          this._streamPush(payload);
+        }
+        else {
+          this.emit('delete', row);
+        }
       }
       else {
         assert.fail(`Unexpected query changed op '${payload.op}'.`);
@@ -415,6 +495,36 @@ class ReactiveQueryHandle extends EventEmitter {
     }
 
     return sources;
+  }
+
+  _read(size) {
+    (async () => {
+      if (!this._started) {
+        this._isStream = true;
+        await this.start();
+      }
+    })().catch((error) => {
+      this.emit('error', error);
+    });
+  }
+
+  _destroy(error, callback) {
+    (async () => {
+      await this._stop();
+    })().catch((error) => {
+      callback(error);
+    }).then(() => {
+      callback(error);
+    });
+  }
+
+  _streamPush(data) {
+    this._streamQueue.push(data);
+    while (this._streamQueue.length) {
+      const chunk = this._streamQueue.shift();
+      // TODO: Implement backpressure.
+      this.push(chunk);
+    }
   }
 }
 
@@ -686,6 +796,10 @@ class Manager extends EventEmitter {
     this._setHandleForQuery(handle, queryId);
     this._useClient(client);
     handle.once('stop', (error) => {
+      this._deleteHandleForQuery(queryId);
+      this._releaseClient(client);
+    });
+    handle.once('close', () => {
       this._deleteHandleForQuery(queryId);
       this._releaseClient(client);
     });
