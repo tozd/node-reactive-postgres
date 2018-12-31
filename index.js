@@ -17,16 +17,16 @@ const DEFAULT_QUERY_OPTIONS = {
   batchSize: 0,
   // Custom type parsers.
   types: null,
-  // We have a low default value so that backpressure is quickly detected.
-  highWaterMark: 16,
   autoDestroy: false,
 };
 
 class ReactiveQueryHandle extends Readable {
   constructor(manager, client, queryId, query, options) {
     super({
-      highWaterMark: options.highWaterMark,
       autoDestroy: options.autoDestroy,
+      // We disable internal buffering in "Readable" because we buffer ourselves.
+      // We want to detect backpressure as soon as possible so that we do not refresh unnecessary.
+      highWaterMark: 0,
       objectMode: true,
     });
 
