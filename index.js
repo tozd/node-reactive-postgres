@@ -116,20 +116,20 @@ class ReactiveQueryHandle extends Readable {
     }
   }
 
-  async stop() {
+  async stop(error) {
     if (this._isStream) {
       await new Promise((resolve, reject) => {
         this.once('close', resolve);
         this.once('error', reject);
-        this.destroy();
+        this.destroy(error);
       });
     }
     else {
-      await this._stop();
+      await this._stop(error);
     }
   }
 
-  async _stop() {
+  async _stop(error) {
     if (this._stopped) {
       return;
     }
@@ -173,7 +173,7 @@ class ReactiveQueryHandle extends Readable {
     }
 
     if (!this._isStream) {
-      this.emit('stop');
+      this.emit('stop', error);
     }
   }
 
@@ -654,7 +654,7 @@ class Manager extends EventEmitter {
     this.emit('start');
   }
 
-  async stop() {
+  async stop(error) {
     if (this._stopped) {
       return;
     }
@@ -694,10 +694,10 @@ class Manager extends EventEmitter {
       throw error;
     }
 
-    this.emit('stop');
+    this.emit('stop', error);
   }
 
-  async getClient() {
+  async _getClient() {
     if (this._stopped) {
       // This method is returning a client, so we throw.
       throw new Error("Manager has been stopped.");
@@ -830,7 +830,7 @@ class Manager extends EventEmitter {
     return client;
   }
 
-  async query(query, options) {
+  async query(query, options={}) {
     if (this._stopped) {
       // This method is returning a handle, so we throw.
       throw new Error("Manager has been stopped.");
@@ -842,7 +842,7 @@ class Manager extends EventEmitter {
     options = Object.assign({}, DEFAULT_QUERY_OPTIONS, options);
 
     const queryId = await randomId();
-    const client = await this.getClient();
+    const client = await this._getClient();
 
     const handle = new this.options.handleClass(this, client, queryId, query, options);
     this._setHandleForQuery(handle, queryId);
