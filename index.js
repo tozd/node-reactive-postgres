@@ -18,13 +18,6 @@ const DEFAULT_QUERY_OPTIONS = {
   types: null,
 };
 
-const DEFAULT_MANAGER_OPTIONS = {
-  maxConnections: 10,
-  connectionConfig: {},
-};
-
-const NOTIFICATION_REGEX = /^(.+)_(query_ready|query_changed|query_refreshed|source_changed)$/;
-
 // TODO: Implement stream as well.
 class ReactiveQueryHandle extends EventEmitter {
   constructor(manager, client, queryId, query, options) {
@@ -404,6 +397,14 @@ class ReactiveQueryHandle extends EventEmitter {
   }
 }
 
+const DEFAULT_MANAGER_OPTIONS = {
+  maxConnections: 10,
+  connectionConfig: {},
+  handleClass: ReactiveQueryHandle,
+};
+
+const NOTIFICATION_REGEX = /^(.+)_(query_ready|query_changed|query_refreshed|source_changed)$/;
+
 // TODO: Disconnect idle clients after some time.
 //       Idle meaning that they do not have any reactive queries using them.
 class Manager extends EventEmitter {
@@ -660,7 +661,7 @@ class Manager extends EventEmitter {
     const queryId = await randomId();
     const client = await this.getClient();
 
-    const handle = new ReactiveQueryHandle(this, client, queryId, query, options);
+    const handle = new this.options.handleClass(this, client, queryId, query, options);
     this._setHandleForQuery(handle, queryId);
     this._useClient(client);
     handle.once('end', (error) => {
@@ -713,4 +714,5 @@ class Manager extends EventEmitter {
 
 module.exports = {
   Manager,
+  ReactiveQueryHandle,
 };
