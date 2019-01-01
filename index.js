@@ -61,7 +61,10 @@ class ReactiveQueryHandle extends Readable {
     this._started = true;
 
     try {
-      const {rows: queryExplanation} = await this.client.query({text: `EXPLAIN (FORMAT JSON) (${this.query})`, rowMode: 'array'});
+      const {rows: queryExplanation} = await this.client.query({
+        text: `EXPLAIN (FORMAT JSON) (${this.query})`,
+        rowMode: 'array',
+      });
 
       this._sources = [...this._extractSources(queryExplanation)].sort();
 
