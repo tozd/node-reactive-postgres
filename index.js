@@ -844,6 +844,7 @@ class Manager extends EventEmitter {
 
     options = Object.assign({}, DEFAULT_QUERY_OPTIONS, options);
 
+    // We generate ID outside of the constructor so that it can be async.
     const queryId = await randomId();
     const client = await this._getClient();
 
