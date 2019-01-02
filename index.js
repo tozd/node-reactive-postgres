@@ -10,14 +10,10 @@ const DEFAULT_QUERY_OPTIONS = {
   // TODO: Allow multi-column unique index as well.
   uniqueColumn: 'id',
   refreshThrottleWait: 100, // ms
-  // Can be "id", "changed", "full".
   mode: 'id',
-  // When mode is "changed" or "full", in how large batches do we fetch data inside one refresh?
-  // 0 means only one batch per refresh.
+  // TODO: Should batch size be on the number of rows to fetch and not number of changes?
   batchSize: 0,
-  // Custom type parsers.
   types: null,
-  autoDestroy: false,
 };
 
 class ReactiveQueryHandle extends Readable {
