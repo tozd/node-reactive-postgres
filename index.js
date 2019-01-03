@@ -611,7 +611,7 @@ class ReactiveQueryHandle extends Readable {
       });
     }
     else if (!this._throttleTimeout) {
-      this._throttleTimeout = setTimeout(async () => {
+      this._throttleTimeout = setTimeout(() => {
         this._throttleTimestamp = 0;
         this._throttleTimeout = null;
         this.refresh().catch((error) => {
