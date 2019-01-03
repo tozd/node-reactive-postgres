@@ -2,6 +2,7 @@ const assert = require('assert');
 const EventEmitter = require('events');
 const {Readable} = require('stream');
 
+const AwaitLock = require('await-lock');
 const {Client} = require('pg');
 
 const {randomId} = require('./random');
@@ -57,6 +58,7 @@ class ReactiveQueryHandle extends Readable {
 
     this._started = true;
 
+    await this.client.lock.acquireAsync();
     try {
       const {rows: queryExplanation} = await this.client.query({
         text: `EXPLAIN (FORMAT JSON) (${this.query})`,
@@ -68,17 +70,20 @@ class ReactiveQueryHandle extends Readable {
     catch (error) {
       this._stopped = true;
 
-      await this.client.query(`
-        ROLLBACK;
-      `);
-
       if (!this._isStream) {
         this.emit('error', error);
         this.emit('stop', error);
       }
-      throw error;
+
+      const newError = new Error(error);
+      newError.cause = error;
+      throw newError;
+    }
+    finally {
+      await this.client.lock.release();
     }
 
+    await this.manager.client.lock.acquireAsync();
     try {
       await this.manager.client.query(`
         START TRANSACTION;
@@ -100,9 +105,16 @@ class ReactiveQueryHandle extends Readable {
         this.emit('error', error);
         this.emit('stop', error);
       }
-      throw error;
+
+      const newError = new Error(error);
+      newError.cause = error;
+      throw newError;
+    }
+    finally {
+      await this.manager.client.lock.release();
     }
 
+    await this.client.lock.acquireAsync();
     try {
       // TODO: Handle also TRUNCATE of sources?
       //       What if it is not really a table but a view or something else?
@@ -143,7 +155,13 @@ class ReactiveQueryHandle extends Readable {
         this.emit('error', error);
         this.emit('stop', error);
       }
-      throw error;
+
+      const newError = new Error(error);
+      newError.cause = error;
+      throw newError;
+    }
+    finally {
+      await this.client.lock.release();
     }
 
     if (!this._isStream) {
@@ -180,6 +198,7 @@ class ReactiveQueryHandle extends Readable {
       this._throttleTimeout = null;
     }
 
+    await this.manager.client.lock.acquireAsync();
     try {
       await this.manager.client.query(`
         START TRANSACTION;
@@ -199,9 +218,16 @@ class ReactiveQueryHandle extends Readable {
         this.emit('error', error);
         this.emit('stop', error);
       }
-      throw error;
+
+      const newError = new Error(error);
+      newError.cause = error;
+      throw newError;
+    }
+    finally {
+      await this.manager.client.lock.release();
     }
 
+    await this.client.lock.acquireAsync();
     try {
       const sourcesTriggers = this._sources.map((source) => {
         return `
@@ -235,7 +261,13 @@ class ReactiveQueryHandle extends Readable {
         this.emit('error', error);
         this.emit('stop', error);
       }
-      throw error;
+
+      const newError = new Error(error);
+      newError.cause = error;
+      throw newError;
+    }
+    finally {
+      await this.client.lock.release();
     }
 
     if (!this._isStream) {
@@ -508,14 +540,14 @@ class ReactiveQueryHandle extends Readable {
       throw new Error("Query has not been started.");
     }
 
-    this._refreshInProgress = this.client.query(`
-      START TRANSACTION;
-      REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
-      NOTIFY "${this.queryId}_query_refreshed", '{}';
-      COMMIT;
-    `);
-
+    await this.client.lock.acquireAsync();
     try {
+      this._refreshInProgress = this.client.query(`
+        START TRANSACTION;
+        REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
+        NOTIFY "${this.queryId}_query_refreshed", '{}';
+        COMMIT;
+      `);
       await this._refreshInProgress;
       this._refreshInProgress = null;
     }
@@ -526,7 +558,12 @@ class ReactiveQueryHandle extends Readable {
         ROLLBACK;
       `);
 
-      throw error;
+      const newError = new Error(error);
+      newError.cause = error;
+      throw newError;
+    }
+    finally {
+      await this.client.lock.release();
     }
   }
 
@@ -705,6 +742,7 @@ class Manager extends EventEmitter {
 
     try {
       this.client = new Client(this.options.connectionConfig);
+      this.client.lock = new AwaitLock();
 
       this.client.on('error', (error) => {
         this.emit('error', error, this.client);
@@ -726,9 +764,13 @@ class Manager extends EventEmitter {
     }
     catch (error) {
       this._stopped = true;
+
       this.emit('error', error);
       this.emit('stop', error);
-      throw error;
+
+      const newError = new Error(error);
+      newError.cause = error;
+      throw newError;
     }
 
     this.emit('start');
@@ -772,7 +814,10 @@ class Manager extends EventEmitter {
     catch (error) {
       this.emit('error', error);
       this.emit('stop', error);
-      throw error;
+
+      const newError = new Error(error);
+      newError.cause = error;
+      throw newError;
     }
 
     this.emit('stop', error);
@@ -844,6 +889,7 @@ class Manager extends EventEmitter {
 
   async _createClient() {
     const client = new Client(this.options.connectionConfig);
+    client.lock = new AwaitLock();
 
     client.on('error', (error) => {
       this.emit('error', error, client);

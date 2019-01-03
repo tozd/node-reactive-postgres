@@ -4,6 +4,7 @@
   "description": "Reactive queries for PostgreSQL",
   "main": "index.js",
   "dependencies": {
+    "await-lock": "~1.1.3",
     "pg": "~7.7.1",
     "through2": "~3.0.0"
   },
