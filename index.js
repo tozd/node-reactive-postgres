@@ -111,26 +111,43 @@ class ReactiveQueryHandle extends Readable {
     }
 
     await this.client.lock.acquireAsync();
+    // We are just starting, how could it be true?
+    assert(!this._refreshInProgress);
+    // We set the flag so that any source changed event gets postponed.
+    this._refreshInProgress = true;
     try {
-      // TODO: Handle also TRUNCATE of sources?
-      //       What if it is not really a table but a view or something else?
-      //       We should try to create a trigger inside a sub-transaction we can rollback if it fails.
-      const sourcesTriggers = this._sources.map((source) => {
-        return `
+      // We drop triggers for each source in its own transaction instead of all of them
+      // at once so that we do not have to lock all sources at the same time and potentially
+      // introduce a deadlock if any of those sources is also used in some other materialized
+      // view at the same time and it is just being refreshed. This means that source changed
+      // events could already start arriving before we have a materialized view created,
+      // but we have them postponed by setting "_refreshInProgress" to "true".
+      for (const source of this._sources) {
+        await this.client.query(`
+          START TRANSACTION;
           CREATE TRIGGER "${this.queryId}_source_changed_${source}_insert" AFTER INSERT ON "${source}" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
           CREATE TRIGGER "${this.queryId}_source_changed_${source}_update" AFTER UPDATE ON "${source}" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
           CREATE TRIGGER "${this.queryId}_source_changed_${source}_delete" AFTER DELETE ON "${source}" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
-        `;
-      }).join('\n');
+          COMMIT;
+        `);
+
+        try {
+          await this.client.query(`
+            CREATE TRIGGER "${this.queryId}_source_changed_${source}_truncate" AFTER TRUNCATE ON "${source}" FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
+          `);
+        }
+        // Ignoring errors. The source might not support TRUNCATE trigger.
+        // For example, tables do, but views do not.
+        catch (error) {}
+      }
 
       // We create a temporary materialized view based on a query, but without data, just
-      // structure. We add triggers to notify the client about changes to sources and
-      // the materialized view. We then refresh the materialized view for the first time.
+      // structure. We add triggers to notify the client about changes the materialized view.
+      // We then refresh the materialized view for the first time.
       await this.client.query(`
         START TRANSACTION;
         CREATE TEMPORARY MATERIALIZED VIEW "${this.queryId}_view" AS ${this.query} WITH NO DATA;
         CREATE UNIQUE INDEX "${this.queryId}_view_id" ON "${this.queryId}_view" ("${this.options.uniqueColumn}");
-        ${sourcesTriggers}
         CREATE TRIGGER "${this.queryId}_query_changed_insert" AFTER INSERT ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.uniqueColumn}');
         CREATE TRIGGER "${this.queryId}_query_changed_update" AFTER UPDATE ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.uniqueColumn}');
         CREATE TRIGGER "${this.queryId}_query_changed_delete" AFTER DELETE ON "${this.queryId}_view" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.uniqueColumn}');
@@ -139,9 +156,12 @@ class ReactiveQueryHandle extends Readable {
         NOTIFY "${this.queryId}_query_ready", '{}';
         COMMIT;
       `);
+
+      this._refreshInProgress = false;
     }
     catch (error) {
       this._stopped = true;
+      this._refreshInProgress = false;
 
       await this.client.query(`
         ROLLBACK;
@@ -161,6 +181,12 @@ class ReactiveQueryHandle extends Readable {
     if (!this._isStream) {
       this.emit('start');
     }
+
+    // If we successfully started, let us retry processing a source
+    // changed event, if it happened while we were starting. If there was
+    // an error things are probably going bad anyway so one skipped retry
+    // should not be too problematic in such case.
+    this._retrySourceChanged();
   }
 
   async stop(error) {
@@ -221,19 +247,22 @@ class ReactiveQueryHandle extends Readable {
 
     await this.client.lock.acquireAsync();
     try {
-      const sourcesTriggers = this._sources.map((source) => {
-        return `
+      // We drop triggers for each source in its own transaction instead of all of them
+      // at once so that we do not have to lock all sources at the same time and potentially
+      // introduce a deadlock if any of those sources is also used in some other materialized
+      // view at the same time and it is just being refreshed.
+      for (const source of this._sources) {
+        await this.client.query(`
+          START TRANSACTION;
           DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_insert" ON "${source}";
           DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_update" ON "${source}";
           DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_delete" ON "${source}";
-        `;
-      }).join('\n');
+          COMMIT;
+        `);
+      }
 
       await this.client.query(`
-        START TRANSACTION;
-        ${sourcesTriggers}
         DROP MATERIALIZED VIEW IF EXISTS "${this.queryId}_view" CASCADE;
-        COMMIT;
       `);
     }
     catch (error) {
@@ -523,7 +552,12 @@ class ReactiveQueryHandle extends Readable {
     }
 
     await this.client.lock.acquireAsync();
+    if (this._refreshInProgress) {
+      await this.client.lock.release();
+      return;
+    }
     this._refreshInProgress = true;
+
     try {
       await this.client.query(`
         START TRANSACTION;
@@ -547,7 +581,7 @@ class ReactiveQueryHandle extends Readable {
     }
 
     // If we successfully refreshed, let us retry processing a source
-    // changed event, if it happened while we were paused. If there was
+    // changed event, if it happened while we were refreshing. If there was
     // an error things are probably going bad anyway so one skipped retry
     // should not be too problematic in such case.
     this._retrySourceChanged();
