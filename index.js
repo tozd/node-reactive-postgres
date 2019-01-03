@@ -253,11 +253,9 @@ class ReactiveQueryHandle extends Readable {
       // view at the same time and it is just being refreshed.
       for (const source of this._sources) {
         await this.client.query(`
-          START TRANSACTION;
           DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_insert" ON "${source}";
           DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_update" ON "${source}";
           DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_delete" ON "${source}";
-          COMMIT;
         `);
       }
 
@@ -266,10 +264,6 @@ class ReactiveQueryHandle extends Readable {
       `);
     }
     catch (error) {
-      await this.client.query(`
-        ROLLBACK;
-      `);
-
       if (!this._isStream) {
         this.emit('error', error);
         this.emit('stop', error);
