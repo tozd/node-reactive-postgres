@@ -45,7 +45,7 @@ class ReactiveQueryHandle extends Readable {
     this._streamQueue = [];
     this._streamPaused = false;
     this._sourceChangedPending = false;
-    this._refreshInProgress = null;
+    this._refreshInProgress = false;
   }
 
   async start() {
@@ -228,14 +228,6 @@ class ReactiveQueryHandle extends Readable {
           DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_delete" ON "${source}";
         `;
       }).join('\n');
-
-      if (this._refreshInProgress) {
-        try {
-          await this._refreshInProgress;
-        }
-        // Ignoring errors.
-        catch (error) {}
-      }
 
       await this.client.query(`
         START TRANSACTION;
@@ -531,18 +523,18 @@ class ReactiveQueryHandle extends Readable {
     }
 
     await this.client.lock.acquireAsync();
+    this._refreshInProgress = true;
     try {
-      this._refreshInProgress = this.client.query(`
+      await this.client.query(`
         START TRANSACTION;
         REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
         NOTIFY "${this.queryId}_query_refreshed", '{}';
         COMMIT;
       `);
-      await this._refreshInProgress;
-      this._refreshInProgress = null;
+      this._refreshInProgress = false;
     }
     catch (error) {
-      this._refreshInProgress = null;
+      this._refreshInProgress = false;
 
       await this.client.query(`
         ROLLBACK;
@@ -553,6 +545,12 @@ class ReactiveQueryHandle extends Readable {
     finally {
       await this.client.lock.release();
     }
+
+    // If we successfully refreshed, let us retry processing a source
+    // changed event, if it happened while we were paused. If there was
+    // an error things are probably going bad anyway so one skipped retry
+    // should not be too problematic in such case.
+    this._retrySourceChanged();
   }
 
   _onSourceChanged(payload) {
@@ -565,10 +563,10 @@ class ReactiveQueryHandle extends Readable {
       this._throttleTimestamp = timestamp;
     }
 
-    // If stream is paused or if queue is not empty, we set a flag to
-    // postpone processing this source changed event. We retry once
+    // If stream is paused, if queue is not empty, or we are in refresh, we set
+    // a flag to postpone processing this source changed event. We retry once
     // stream is not paused anymore or once we emptied the queue.
-    if (this._streamPaused || this._streamQueue.length) {
+    if (this._streamPaused || this._streamQueue.length || this._refreshInProgress) {
       this._sourceChangedPending = true;
       return;
     }
@@ -661,8 +659,7 @@ class ReactiveQueryHandle extends Readable {
     if (!this._streamPaused) {
       // Stream is not paused which means the queue is empty. We retry processing a
       // source changed event, if it happened in the past but we postponed it.
-      // We reuse "_resumeStream" for this purpose.
-      this._resumeStream();
+      this._retrySourceChanged();
     }
   }
 
@@ -678,6 +675,10 @@ class ReactiveQueryHandle extends Readable {
     this._streamPaused = false;
     // Stream is not paused anymore, retry processing a source
     // changed event, if it happened while we were paused.
+    this._retrySourceChanged();
+  }
+
+  _retrySourceChanged() {
     if (this._sourceChangedPending) {
       this._sourceChangedPending = false;
       this._onSourceChanged(null);
