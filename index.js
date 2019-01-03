@@ -75,9 +75,7 @@ class ReactiveQueryHandle extends Readable {
         this.emit('stop', error);
       }
 
-      const newError = new Error(error);
-      newError.cause = error;
-      throw newError;
+      throw error;
     }
     finally {
       await this.client.lock.release();
@@ -106,9 +104,7 @@ class ReactiveQueryHandle extends Readable {
         this.emit('stop', error);
       }
 
-      const newError = new Error(error);
-      newError.cause = error;
-      throw newError;
+      throw error;
     }
     finally {
       await this.manager.client.lock.release();
@@ -156,9 +152,7 @@ class ReactiveQueryHandle extends Readable {
         this.emit('stop', error);
       }
 
-      const newError = new Error(error);
-      newError.cause = error;
-      throw newError;
+      throw error;
     }
     finally {
       await this.client.lock.release();
@@ -219,9 +213,7 @@ class ReactiveQueryHandle extends Readable {
         this.emit('stop', error);
       }
 
-      const newError = new Error(error);
-      newError.cause = error;
-      throw newError;
+      throw error;
     }
     finally {
       await this.manager.client.lock.release();
@@ -262,9 +254,7 @@ class ReactiveQueryHandle extends Readable {
         this.emit('stop', error);
       }
 
-      const newError = new Error(error);
-      newError.cause = error;
-      throw newError;
+      throw error;
     }
     finally {
       await this.client.lock.release();
@@ -558,9 +548,7 @@ class ReactiveQueryHandle extends Readable {
         ROLLBACK;
       `);
 
-      const newError = new Error(error);
-      newError.cause = error;
-      throw newError;
+      throw error;
     }
     finally {
       await this.client.lock.release();
@@ -768,9 +756,7 @@ class Manager extends EventEmitter {
       this.emit('error', error);
       this.emit('stop', error);
 
-      const newError = new Error(error);
-      newError.cause = error;
-      throw newError;
+      throw error;
     }
 
     this.emit('start');
@@ -815,9 +801,7 @@ class Manager extends EventEmitter {
       this.emit('error', error);
       this.emit('stop', error);
 
-      const newError = new Error(error);
-      newError.cause = error;
-      throw newError;
+      throw error;
     }
 
     this.emit('stop', error);
