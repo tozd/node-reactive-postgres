@@ -44,6 +44,7 @@ class ReactiveQueryHandle extends Readable {
     this._streamQueue = [];
     this._streamPaused = false;
     this._sourceChangedPending = false;
+    this._refreshInProgress = null;
   }
 
   async start() {
@@ -63,7 +64,46 @@ class ReactiveQueryHandle extends Readable {
       });
 
       this._sources = [...this._extractSources(queryExplanation)].sort();
+    }
+    catch (error) {
+      this._stopped = true;
 
+      await this.client.query(`
+        ROLLBACK;
+      `);
+
+      if (!this._isStream) {
+        this.emit('error', error);
+        this.emit('stop', error);
+      }
+      throw error;
+    }
+
+    try {
+      await this.manager.client.query(`
+        START TRANSACTION;
+        LISTEN "${this.queryId}_query_ready";
+        LISTEN "${this.queryId}_query_changed";
+        LISTEN "${this.queryId}_query_refreshed";
+        LISTEN "${this.queryId}_source_changed";
+        COMMIT;
+      `);
+    }
+    catch (error) {
+      this._stopped = true;
+
+      await this.manager.client.query(`
+        ROLLBACK;
+      `);
+
+      if (!this._isStream) {
+        this.emit('error', error);
+        this.emit('stop', error);
+      }
+      throw error;
+    }
+
+    try {
       // TODO: Handle also TRUNCATE of sources?
       //       What if it is not really a table but a view or something else?
       //       We should try to create a trigger inside a sub-transaction we can rollback if it fails.
@@ -74,15 +114,6 @@ class ReactiveQueryHandle extends Readable {
           CREATE TRIGGER "${this.queryId}_source_changed_${source}_delete" AFTER DELETE ON "${source}" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
         `;
       }).join('\n');
-
-      await this.manager.client.query(`
-        START TRANSACTION;
-        LISTEN "${this.queryId}_query_ready";
-        LISTEN "${this.queryId}_query_changed";
-        LISTEN "${this.queryId}_query_refreshed";
-        LISTEN "${this.queryId}_source_changed";
-        COMMIT;
-      `);
 
       // We create a temporary materialized view based on a query, but without data, just
       // structure. We add triggers to notify the client about changes to sources and
@@ -103,6 +134,11 @@ class ReactiveQueryHandle extends Readable {
     }
     catch (error) {
       this._stopped = true;
+
+      await this.client.query(`
+        ROLLBACK;
+      `);
+
       if (!this._isStream) {
         this.emit('error', error);
         this.emit('stop', error);
@@ -132,11 +168,39 @@ class ReactiveQueryHandle extends Readable {
     if (this._stopped) {
       return;
     }
-    if (!this._started) {
-      throw new Error("Query has not been started.");
-    }
 
     this._stopped = true;
+
+    if (!this._started) {
+      return;
+    }
+
+    if (this._throttleTimeout) {
+      clearTimeout(this._throttleTimeout);
+      this._throttleTimeout = null;
+    }
+
+    try {
+      await this.manager.client.query(`
+        START TRANSACTION;
+        UNLISTEN "${this.queryId}_query_ready";
+        UNLISTEN "${this.queryId}_query_changed";
+        UNLISTEN "${this.queryId}_query_refreshed";
+        UNLISTEN "${this.queryId}_source_changed";
+        COMMIT;
+      `);
+    }
+    catch (error) {
+      await this.manager.client.query(`
+        ROLLBACK;
+      `);
+
+      if (!this._isStream) {
+        this.emit('error', error);
+        this.emit('stop', error);
+      }
+      throw error;
+    }
 
     try {
       const sourcesTriggers = this._sources.map((source) => {
@@ -147,14 +211,13 @@ class ReactiveQueryHandle extends Readable {
         `;
       }).join('\n');
 
-      await this.manager.client.query(`
-        START TRANSACTION;
-        UNLISTEN "${this.queryId}_query_ready";
-        UNLISTEN "${this.queryId}_query_changed";
-        UNLISTEN "${this.queryId}_query_refreshed";
-        UNLISTEN "${this.queryId}_source_changed";
-        COMMIT;
-      `);
+      if (this._refreshInProgress) {
+        try {
+          await this._refreshInProgress;
+        }
+        // Ignoring errors.
+        catch (error) {}
+      }
 
       await this.client.query(`
         START TRANSACTION;
@@ -164,6 +227,10 @@ class ReactiveQueryHandle extends Readable {
       `);
     }
     catch (error) {
+      await this.client.query(`
+        ROLLBACK;
+      `);
+
       if (!this._isStream) {
         this.emit('error', error);
         this.emit('stop', error);
@@ -441,12 +508,26 @@ class ReactiveQueryHandle extends Readable {
       throw new Error("Query has not been started.");
     }
 
-    this.client.query(`
+    this._refreshInProgress = this.client.query(`
       START TRANSACTION;
       REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
       NOTIFY "${this.queryId}_query_refreshed", '{}';
       COMMIT;
     `);
+
+    try {
+      await this._refreshInProgress;
+      this._refreshInProgress = null;
+    }
+    catch (error) {
+      this._refreshInProgress = null;
+
+      await this.client.query(`
+        ROLLBACK;
+      `);
+
+      throw error;
+    }
   }
 
   _onSourceChanged(payload) {
@@ -657,11 +738,12 @@ class Manager extends EventEmitter {
     if (this._stopped) {
       return;
     }
-    if (!this._started) {
-      throw new Error("Manager has not been started.");
-    }
 
     this._stopped = true;
+
+    if (!this._started) {
+      return;
+    }
 
     try {
       while (this._handlesForQuery.size) {
