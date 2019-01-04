@@ -63,7 +63,7 @@ async function sleep(ms) {
     );
     CREATE TABLE IF NOT EXISTS comments (
       "_id" CHAR(17) PRIMARY KEY DEFAULT random_id(),
-      "postId" CHAR(17) NOT NULL REFERENCES Posts("_id"),
+      "postId" CHAR(17) NOT NULL REFERENCES posts("_id"),
       "body" JSONB NOT NULL DEFAULT '{}'::JSONB
     );
     DELETE FROM comments;
