@@ -179,3 +179,5 @@ There are more methods, properties, and options available through the
 * [pg-live-query](https://github.com/nothingisdead/pg-live-query) – adds revision columns to sources and additional
   temporary table which stores information how those revisions map to queries, all this then allows computing changes
   inside the database, but the approach does not allow 
+* [pg-query-observer](https://github.com/Richie765/pg-query-observer) – it seems like a bit cleaned and updated version
+  of `pg-live-select`, but buggy and does not work with multiple parallel queries
