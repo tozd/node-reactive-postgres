@@ -115,7 +115,8 @@ If the error is associated with a PostgreSQL client, the `client` is provided as
 
 ##### `'stop'` event `([error])`
 
-Event emitted when manager stops. If it stopped because of an error, the `error` is provided as an argument.
+Event emitted when the manager stops. If it stopped because of an error,
+the `error` is provided as an argument.
 
 ### `ReactiveQueryHandle`
 
@@ -134,7 +135,7 @@ There are more methods, properties, and options available through the
 
 ##### `async start()`
 
-Initializes the reactive query and starts observing the reactive query, emitting events about
+Initializes the reactive query and starts observing the reactive query, emitting events for
 initial results data and later changes to results data.
 It emits `'start'` event.
 
@@ -177,19 +178,46 @@ Removes the specified `listener` from the listener array for the event named `ev
 
 ##### `'start'` event `()`
 
+Event emitted when reactive query starts successfully.
+
 ##### `'ready'` event `()`
+
+Event emitted when all events for initial results data have been emitted.
+Later events are about changes to results data.
 
 ##### `'refresh'` event `()`
 
+Event emitted when a refresh has finished and all events for changes to results data
+as part of one refresh have been emitted.
+
 ##### `'insert'` event `(row)`
+
+Event emitted when a new row has been added to the reactive query.
+`row` is provided as an argument.
 
 ##### `'update'` event `(row, columns)`
 
+Event emitted when a row has been updated.
+`row` is provided as an argument. In `id` mode, `row` contains only the value
+of the unique column of the row which has been updated. In `changed` mode, `row`
+contains also data for columns which have changed. In `full` mode, `row`
+contains the full updated row, both columns which have changed and those which have not.
+`columns` is a list of columns which have changed.
+
 ##### `'delete'` event `(row)`
+
+Event emitted when a row has been deleted. `row` is provided as an argument and
+contains only the unique column of the row which has been deleted.
 
 ##### `'error'` event `(error)`
 
+Event emitted when there is an error at the reactive query level.
+`error` is provided as an argument.
+
 ##### `'stop'` event `([error])`
+
+Event emitted when the reactive query stops. If it stopped because of an error,
+the `error` is provided as an argument.
 
 #### `Readable` stream API
 
