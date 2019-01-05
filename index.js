@@ -589,7 +589,7 @@ class ReactiveQueryHandle extends Readable {
       return;
     }
 
-    const timestamp = new Date().valueOf();
+    const timestamp = Date.now();
     if (!this._throttleTimestamp) {
       this._throttleTimestamp = timestamp;
     }
