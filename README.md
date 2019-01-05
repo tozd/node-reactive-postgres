@@ -14,6 +14,15 @@ in the future these patches will be merged in.
 
 ## Performance
 
+This package has known performance issues:
+* A [memory leak](https://github.com/tozd/node-reactive-postgres/issues/1).
+* A [deadlock or very long time to exit](https://github.com/tozd/node-reactive-postgres/issues/2).
+* [Response latency is suprisingly high in comparison with other projects](https://github.com/tozd/node-reactive-postgres/issues/3).
+
+For more information about performance comparisons of this package and related packages,
+see [this benchmark tool](https://github.com/mitar/node-pg-reactivity-benchmark) and
+[results at the end](https://github.com/mitar/node-pg-reactivity-benchmark#results).
+
 ## Limitations
 
 * Queries require an unique column which serves to identify rows and
