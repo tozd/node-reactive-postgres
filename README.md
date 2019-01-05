@@ -193,7 +193,9 @@ as part of one refresh have been emitted.
 ##### `'insert'` event `(row)`
 
 Event emitted when a new row has been added to the reactive query.
-`row` is provided as an argument.
+`row` is provided as an argument. In `id` mode, `row` contains only the value
+of the unique column of the row which has been inserted. In `changed` and `full` modes,
+`row` contains full row which has been inserted.
 
 ##### `'update'` event `(row, columns)`
 
@@ -224,19 +226,62 @@ the `error` is provided as an argument.
 There are more methods, properties, and options available through the
 [`Readable` stream base class](https://nodejs.org/api/stream.html#stream_readable_streams).
 
+When operating as a stream, the reactive handle is producing objects
+describing a change to the reactive query. They are of the following
+structure:
+
+```js
+{
+  op: <event name>,
+  ... <payload> ...
+}
+```
+
+`event name` matches names of events emitted when operating as an event emitter.
+Arguments of those events are converted to object's payload.
+
+Stream supports backpressure and if consumer of the stream reads slower than
+what `refreshThrottleWait` dictates should be the minimal delay between refreshes,
+further refreshing is paused until stream is drained.
+
 ##### `read([size])`
+
+Reads the next object describing a change to the reactive query, if available.
+[More information](https://nodejs.org/api/stream.html#stream_readable_read_size).
 
 ##### `pipe(destination[, options])`
 
+The method attaches the stream to the `destination`, using `options`.
+[More information](https://nodejs.org/api/stream.html#stream_readable_pipe_destination_options).
+
 ##### `destroy([error])`
+
+Destroy the stream and stop the reactive query. It emits `'error'` (if `error` argument
+is provided, which is then passed as payload in `'error'` event) and `'close'` events.
+[More information](https://nodejs.org/api/stream.html#stream_readable_destroy_error).
 
 ##### 'data' event `(chunk)`
 
+Event emitted whenever the stream is relinquishing ownership of a chunk
+of data to a consumer.
+`chunk` is provided as an argument.
+[More information](https://nodejs.org/api/stream.html#stream_event_data).
+
 ##### 'readable' event `()`
+
+Event emitted when there is data available to be read from the stream.
+[More information](https://nodejs.org/api/stream.html#stream_event_readable).
 
 ##### 'error' event `(error)`
 
+Event emitted when there is an error at the reactive query level.
+`error` is provided as an argument.
+[More information](https://nodejs.org/api/stream.html#stream_event_error_1).
+
 ##### 'close' event `()`
+
+Event emitted when the stream has been destroyed.
+[More information](https://nodejs.org/api/stream.html#stream_event_close_1).
 
 ## Related projects
 
