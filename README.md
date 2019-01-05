@@ -97,13 +97,25 @@ per every `refreshThrottleWait` milliseconds
 
 ##### `'start'` event `()`
 
+Event emitted when manager starts successfully.
+
 ##### `'connect'` event `(client)`
+
+Event emitted when a new [PostgreSQL client](https://node-postgres.com/api/client) is created
+and connected. `client` is provided as an argument.
 
 ##### `'disconnect'` event `(client)`
 
+Event emitted when a PostgreSQL client is disconnected. `client` is provided as an argument.
+
 ##### `'error'` event `(error[, client])`
 
+Event emitted when there is an error at the manager level. `error` is provided as an argument.
+If the error is associated with a PostgreSQL client, the `client` is provided as well.
+
 ##### `'stop'` event `([error])`
+
+Event emitted when manager stops. If it stopped because of an error, the `error` is provided as an argument.
 
 ### `ReactiveQueryHandle`
 
