@@ -134,11 +134,31 @@ There are more methods, properties, and options available through the
 
 ##### `async start()`
 
+Initializes the reactive query and starts observing the reactive query, emitting events about
+initial results data and later changes to results data.
+It emits `'start'` event.
+
+Having this method separate from constructing a reactive query allows attaching event handlers
+before starting, so that no events are missed.
+
 ##### `async stop([error])`
+
+Stops the reactive query. 
+It emits `'stop'` event. Accepts optional `error` argument which is passed
+as payload in `'stop'` event.
+
+##### `async refresh()`
+
+Forces the refresh of the reactive query, computation of changes, and emitting
+relevant events. This can override `refreshThrottleWait` option which otherwise
+controls the minimal delay between a source change and a refresh.
 
 ##### `async flush()`
 
-##### `async refresh()`
+When operating in `changed` or `full` mode, changes are batched together before
+a query to fetch data is made. This method forces the query to be made using
+currently known changes instead of waiting for a batch as configured by the
+`batchSize` option.
 
 ##### `on(eventName, listener)` and `addListener(eventName, listener)`
 
