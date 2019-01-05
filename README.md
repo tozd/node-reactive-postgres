@@ -16,8 +16,8 @@ Reactive queries are implemented in the following manner:
 
 * For every reactive query, a `TEMPORARY MATERIALIZED VIEW` is created
   in the database.
-* Triggers are added to all source tables for the query, so that
-  when any of the source tables change, this package's client is
+* Triggers are added to all query sources for the query, so that
+  when any of the sources change, this package's client is
   notified using `LISTEN`/`NOTIFY` that a source has changed, which can
   potentially influence the results of the query.
 * Triggers are added to the view so that any `INSERT`s/`UPDATE`s/`DELETE`s
@@ -59,6 +59,12 @@ see [this benchmark tool](https://github.com/mitar/node-pg-reactivity-benchmark)
 * Queries cannot contain placeholders or be prepared. You can use
   `client.escapeLiteral(...)` function to escape values when constructing
   a query.
+* Currently, when any of sources change in any manner, a materialized view
+  used for reactive query is fully refreshed (after a throttling delay).
+  Ideally, refresh would be done only when it is known that a source change
+  is really influencing the materialized view. Furthermore, materialized
+  view could be updated in an incremental manner instead of doing a full
+  refresh.
 
 ## API
 
