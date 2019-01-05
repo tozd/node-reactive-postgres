@@ -54,8 +54,11 @@ see [this benchmark tool](https://github.com/mitar/node-pg-reactivity-benchmark)
   `uniqueColumn` query option. By default is `id`.
 * Order of rows in query results are ignored when determining changes.
   Order still matters when selecting which rows are in query results
-  through `ORDER BY X LIMIT Y` pattern.
-* Queries cannot contain placeholders or be prepared.
+  through `ORDER BY X LIMIT Y` pattern. If you care about order of
+  query results, order rows on the client.
+* Queries cannot contain placeholders or be prepared. You can use
+  `client.escapeLiteral(...)` function to escape values when constructing
+  a query.
 
 ## API
 
