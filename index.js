@@ -17,6 +17,9 @@ const DEFAULT_QUERY_OPTIONS = {
   types: null,
 };
 
+// TODO: Should we expose an event that the source has changed?
+// TODO: Should we allow disabling automatic refresh?
+//       This could allow one to then provide custom logic for refresh.
 class ReactiveQueryHandle extends Readable {
   constructor(manager, client, queryId, query, options) {
     super({
