@@ -679,7 +679,13 @@ class Manager extends EventEmitter {
     }
 
     // We pick a random client from available clients.
-    return availableClients[Math.floor(Math.random() * availableClients.length)];
+    const client = availableClients[Math.floor(Math.random() * availableClients.length)];
+
+    // We mark it as used.
+    this._useClient(client);
+
+    // And return it.
+    return client;
   }
 
   _setHandleForQuery(handle, queryId) {
@@ -820,20 +826,27 @@ class Manager extends EventEmitter {
 
     // We generate ID outside of the constructor so that it can be async.
     const queryId = await randomId();
-    const client = await this._getClient();
 
-    const handle = new this.options.handleClass(this, client, queryId, query, options);
-    this._setHandleForQuery(handle, queryId);
-    this._useClient(client);
-    handle.once('stop', (error) => {
-      this._deleteHandleForQuery(queryId);
+    const client = await this._getClient();
+    try {
+      const handle = new this.options.handleClass(this, client, queryId, query, options);
+      this._setHandleForQuery(handle, queryId);
+      handle.once('stop', (error) => {
+        this._deleteHandleForQuery(queryId);
+        this._releaseClient(client);
+      });
+      handle.once('close', () => {
+        this._deleteHandleForQuery(queryId);
+        this._releaseClient(client);
+      });
+      return handle;
+    }
+    catch (error) {
+      // There was an error, client will not really be used.
       this._releaseClient(client);
-    });
-    handle.once('close', () => {
-      this._deleteHandleForQuery(queryId);
-      this._releaseClient(client);
-    });
-    return handle;
+
+      throw error;
+    }
   }
 
   _onNotification(message) {
