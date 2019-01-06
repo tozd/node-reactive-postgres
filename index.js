@@ -1159,7 +1159,7 @@ class Manager extends EventEmitter {
       });
     }
     else {
-      console.error(`Unknown notification type '${notificationType}'.`);
+      console.warn(`Unknown notification type '${notificationType}'.`);
     }
   }
 }
