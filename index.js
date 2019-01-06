@@ -64,11 +64,15 @@ class ReactiveQueryHandle extends Readable {
     let queryExplanation;
     await this.client.lock.acquireAsync();
     try {
-      const {rows} = await this.client.query({
-        text: `EXPLAIN (FORMAT JSON) (${this.query})`,
+      const results = await this.client.query({
+        text: `
+          PREPARE "${this.queryId}_query" AS (${this.query});
+          EXPLAIN (FORMAT JSON) EXECUTE "${this.queryId}_query";
+        `,
         rowMode: 'array',
       });
-      queryExplanation = rows;
+
+      queryExplanation = results[1].rows;
     }
     catch (error) {
       this._stopped = true;
@@ -117,25 +121,19 @@ class ReactiveQueryHandle extends Readable {
     let initialChanges;
     await this.client.lock.acquireAsync();
     try {
-      // We create a temporary materialized view based on a query.
-      // We create a temporary table into which triggers copy changes during refresh.
-      // We create those triggers. And then we select initial results.
+      // We create a temporary table into which we cache current results of the query.
       const results = await this.client.query({
         text: `
           START TRANSACTION;
-          CREATE TEMPORARY MATERIALIZED VIEW "${this.queryId}_view" AS ${this.query};
-          CREATE UNIQUE INDEX "${this.queryId}_view_id" ON "${this.queryId}_view" ("${this.options.uniqueColumn}");
-          CREATE TEMPORARY TABLE "${this.queryId}_changes" (__op__ SMALLINT NOT NULL, LIKE "${this.queryId}_view" EXCLUDING CONSTRAINTS EXCLUDING DEFAULTS EXCLUDING INDEXES);
-          CREATE TRIGGER "${this.queryId}_query_changed_insert" AFTER INSERT ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.store_changes('${this.mode}', '${this.queryId}_changes', '${this.options.uniqueColumn}');
-          CREATE TRIGGER "${this.queryId}_query_changed_update" AFTER UPDATE ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.store_changes('${this.mode}', '${this.queryId}_changes', '${this.options.uniqueColumn}');
-          CREATE TRIGGER "${this.queryId}_query_changed_delete" AFTER DELETE ON "${this.queryId}_view" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.store_changes('${this.mode}', '${this.queryId}_changes', '${this.options.uniqueColumn}');
-          SELECT 1 AS __op__, * FROM "${this.queryId}_view";
+          CREATE TEMPORARY TABLE "${this.queryId}_cache" AS EXECUTE "${this.queryId}_query";
+          CREATE UNIQUE INDEX "${this.queryId}_cache_id" ON "${this.queryId}_cache" ("${this.options.uniqueColumn}");
+          SELECT 1 AS __op__, * FROM "${this.queryId}_cache";
           COMMIT;
         `,
         types: this.types,
       });
 
-      initialChanges = results[7].rows;
+      initialChanges = results[3].rows;
     }
     catch (error) {
       this._stopped = true;
@@ -229,8 +227,8 @@ class ReactiveQueryHandle extends Readable {
     await this.client.lock.acquireAsync();
     try {
       await this.client.query(`
-        DROP MATERIALIZED VIEW IF EXISTS "${this.queryId}_view" CASCADE;
-        DROP TABLE "${this.queryId}_changes" CASCADE;
+        DEALLOCATE "${this.queryId}_query";
+        DROP TABLE "${this.queryId}_cache" CASCADE;
       `);
     }
     catch (error) {
@@ -292,19 +290,30 @@ class ReactiveQueryHandle extends Readable {
     let changes;
     await this.client.lock.acquireAsync();
     try {
-      // Refresh populates the temporary table with changes.
-      // We delete changes from it and return them.
+      // Create a new temporary table with new results of the query.
+      // Computes a diff, swap the tables, and drop the old one.
       const results = await this.client.query({
         text: `
           START TRANSACTION;
-          REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
-          DELETE FROM "${this.queryId}_changes" RETURNING *;
+          CREATE TEMPORARY TABLE "${this.queryId}_new" AS EXECUTE "${this.queryId}_query";
+          CREATE UNIQUE INDEX "${this.queryId}_new_id" ON "${this.queryId}_new" ("${this.options.uniqueColumn}");
+          SELECT
+            CASE WHEN "${this.queryId}_cache" IS NULL THEN 1
+                 WHEN "${this.queryId}_new" IS NULL THEN 3
+                 ELSE 2
+            END AS __op__,
+            (COALESCE("${this.queryId}_new", ROW("${this.queryId}_cache".*)::"${this.queryId}_new")).*
+            FROM "${this.queryId}_cache" FULL OUTER JOIN "${this.queryId}_new" ON ("${this.queryId}_cache"."${this.options.uniqueColumn}"="${this.queryId}_new"."${this.options.uniqueColumn}")
+            WHERE "${this.queryId}_cache" IS NULL OR "${this.queryId}_new" IS NULL OR "${this.queryId}_cache" OPERATOR(pg_catalog.*<>) "${this.queryId}_new";
+          DROP TABLE "${this.queryId}_cache";
+          ALTER TABLE "${this.queryId}_new" RENAME TO "${this.queryId}_cache";
+          ALTER INDEX "${this.queryId}_new_id" RENAME TO "${this.queryId}_cache_id";
           COMMIT;
         `,
         types: this.types,
       });
 
-      changes = results[2].rows;
+      changes = results[3].rows;
     }
     catch (error) {
       this._refreshInProgress = false;
@@ -790,29 +799,6 @@ class Manager extends EventEmitter {
     });
 
     await client.connect();
-
-    // We define the function as temporary for every client so that triggers using
-    // it are dropped when the client disconnects (session ends).
-    // We can use INNER JOIN in "notify_query_changed" because we know that column names
-    // are the same in "new_table" and "old_table", and we are joining on column names.
-    await client.query(`
-      CREATE OR REPLACE FUNCTION pg_temp.store_changes() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-        DECLARE
-          mode TEXT = TG_ARGV[0];
-          changes_table TEXT := TG_ARGV[1];
-          primary_column TEXT := TG_ARGV[2];
-        BEGIN
-          IF (TG_OP = 'INSERT') THEN
-            EXECUTE 'INSERT INTO "' || changes_table || '" SELECT 1 AS __op__, * FROM new_table';
-          ELSIF (TG_OP = 'UPDATE') THEN
-            EXECUTE 'INSERT INTO "' || changes_table || '" SELECT 2 AS __op__, * FROM new_table';
-          ELSIF (TG_OP = 'DELETE') THEN
-            EXECUTE 'INSERT INTO "' || changes_table || '" SELECT 3 AS __op__, * FROM old_table';
-          END IF;
-          RETURN NULL;
-        END
-      $$;
-    `);
 
     this.emit('connect', client);
 
