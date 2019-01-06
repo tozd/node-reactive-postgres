@@ -38,8 +38,11 @@ Reactive queries are implemented in the following manner:
 
 ## Performance
 
+* Memory use of node process is constant and does not grow with the number of rows in a
+  query result. This is achieved by caching a query using a temporary materialized view
+  in the database.
+
 This package has known performance issues:
-* A [memory leak](https://github.com/tozd/node-reactive-postgres/issues/1).
 * A [deadlock or very long time to exit](https://github.com/tozd/node-reactive-postgres/issues/2).
 * [Response latency is suprisingly high in comparison with other projects](https://github.com/tozd/node-reactive-postgres/issues/3).
 

@@ -561,14 +561,9 @@ class ReactiveQueryHandle extends Readable {
     if (this._refreshInProgress) {
       return;
     }
-
-    await this.client.lock.acquireAsync();
-    if (this._refreshInProgress) {
-      await this.client.lock.release();
-      return;
-    }
     this._refreshInProgress = true;
 
+    await this.client.lock.acquireAsync();
     try {
       await this.client.query(`
         START TRANSACTION;
