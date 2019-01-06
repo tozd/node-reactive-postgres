@@ -127,7 +127,7 @@ class ReactiveQueryHandle extends Readable {
           START TRANSACTION;
           CREATE TEMPORARY TABLE "${this.queryId}_cache" AS EXECUTE "${this.queryId}_query";
           CREATE UNIQUE INDEX "${this.queryId}_cache_id" ON "${this.queryId}_cache" ("${this.options.uniqueColumn}");
-          SELECT 1 AS __op__, * FROM "${this.queryId}_cache";
+          SELECT 1 AS __op__, ARRAY[]::TEXT[] AS __columns__, * FROM "${this.queryId}_cache";
           COMMIT;
         `,
         types: this.types,
@@ -253,14 +253,30 @@ class ReactiveQueryHandle extends Readable {
       const op = OP_MAP.get(row.__op__);
       assert(op, `Unexpected query changed op '${row.__op__}'.`);
       delete row.__op__;
+      const columns = row.__columns__;
+      delete row.__columns__;
       if (this._isStream) {
-        this._streamPush({
-          op: op,
-          row,
-        });
+        if (op === 'update') {
+          this._streamPush({
+            op,
+            columns,
+            row,
+          });
+        }
+        else {
+          this._streamPush({
+            op,
+            row,
+          });
+        }
       }
       else {
-        this.emit(op, row);
+        if (op === 'update') {
+          this.emit(op, row, columns);
+        }
+        else {
+          this.emit(op, row);
+        }
       }
     }
 
@@ -302,6 +318,10 @@ class ReactiveQueryHandle extends Readable {
                  WHEN "${this.queryId}_new" IS NULL THEN 3
                  ELSE 2
             END AS __op__,
+            CASE WHEN "${this.queryId}_cache" IS NULL THEN ARRAY[]::TEXT[]
+                 WHEN "${this.queryId}_new" IS NULL THEN ARRAY[]::TEXT[]
+                 ELSE (SELECT COALESCE(array_agg(row1.key), ARRAY[]::TEXT[]) FROM each(hstore("${this.queryId}_new")) AS row1 INNER JOIN each(hstore("${this.queryId}_cache")) AS row2 ON (row1.key=row2.key) WHERE row1.value IS DISTINCT FROM row2.value)
+            END AS __columns__,
             (COALESCE("${this.queryId}_new", ROW("${this.queryId}_cache".*)::"${this.queryId}_new")).*
             FROM "${this.queryId}_cache" FULL OUTER JOIN "${this.queryId}_new" ON ("${this.queryId}_cache"."${this.options.uniqueColumn}"="${this.queryId}_new"."${this.options.uniqueColumn}")
             WHERE "${this.queryId}_cache" IS NULL OR "${this.queryId}_new" IS NULL OR "${this.queryId}_cache" OPERATOR(pg_catalog.*<>) "${this.queryId}_new";
@@ -567,6 +587,7 @@ class Manager extends EventEmitter {
         $$;
       `);
 
+      // We use hstore to compute which columns changed.
       // TODO: It is possible that the user does not have permissions to create extensions.
       await this.client.query(`
         CREATE EXTENSION IF NOT EXISTS hstore;
