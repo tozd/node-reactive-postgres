@@ -61,14 +61,14 @@ class ReactiveQueryHandle extends Readable {
 
     this._started = true;
 
+    let queryExplanation;
     await this.client.lock.acquireAsync();
     try {
-      const {rows: queryExplanation} = await this.client.query({
+      const {rows} = await this.client.query({
         text: `EXPLAIN (FORMAT JSON) (${this.query})`,
         rowMode: 'array',
       });
-
-      this._sources = [...this._extractSources(queryExplanation)].sort();
+      queryExplanation = rows;
     }
     catch (error) {
       this._stopped = true;
@@ -83,6 +83,8 @@ class ReactiveQueryHandle extends Readable {
     finally {
       await this.client.lock.release();
     }
+
+    this._sources = [...this._extractSources(queryExplanation)].sort();
 
     await this.manager.client.lock.acquireAsync();
     try {
