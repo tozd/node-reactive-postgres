@@ -127,7 +127,7 @@ class ReactiveQueryHandle extends Readable {
           START TRANSACTION;
           CREATE TEMPORARY TABLE "${this.queryId}_cache" AS EXECUTE "${this.queryId}_query";
           CREATE UNIQUE INDEX "${this.queryId}_cache_id" ON "${this.queryId}_cache" ("${this.options.uniqueColumn}");
-          SELECT 1 AS __op__, ARRAY[]::TEXT[] AS __columns__, * FROM "${this.queryId}_cache";
+          SELECT 1 AS __op__, ARRAY[]::TEXT[] AS __columns__, ${this.options.mode === 'id' ? `"${this.options.uniqueColumn}"` : '*'} FROM "${this.queryId}_cache";
           COMMIT;
         `,
         types: this.types,
@@ -255,8 +255,15 @@ class ReactiveQueryHandle extends Readable {
       delete row.__op__;
       const columns = row.__columns__;
       delete row.__columns__;
-      if (this._isStream) {
-        if (op === 'update') {
+      if (op === 'update') {
+        // TODO: Select and fetch only changed columns in "changed" mode.
+        //       Currently we select all columns and remove unchanged columns on the client.
+        for (const key of Object.keys(row)) {
+          if (key !== this.options.uniqueColumn && !columns.includes(key)) {
+            delete row[key];
+          }
+        }
+        if (this._isStream) {
           this._streamPush({
             op,
             columns,
@@ -264,15 +271,15 @@ class ReactiveQueryHandle extends Readable {
           });
         }
         else {
+          this.emit(op, row, columns);
+        }
+      }
+      else {
+        if (this._isStream) {
           this._streamPush({
             op,
             row,
           });
-        }
-      }
-      else {
-        if (op === 'update') {
-          this.emit(op, row, columns);
         }
         else {
           this.emit(op, row);
@@ -308,6 +315,8 @@ class ReactiveQueryHandle extends Readable {
     try {
       // Create a new temporary table with new results of the query.
       // Computes a diff, swap the tables, and drop the old one.
+      // TODO: Select and fetch only changed columns in "changed" mode.
+      //       Currently we select all columns and remove unchanged columns on the client.
       const results = await this.client.query({
         text: `
           START TRANSACTION;
@@ -322,7 +331,7 @@ class ReactiveQueryHandle extends Readable {
                  WHEN "${this.queryId}_new" IS NULL THEN ARRAY[]::TEXT[]
                  ELSE (SELECT COALESCE(array_agg(row1.key), ARRAY[]::TEXT[]) FROM each(hstore("${this.queryId}_new")) AS row1 INNER JOIN each(hstore("${this.queryId}_cache")) AS row2 ON (row1.key=row2.key) WHERE row1.value IS DISTINCT FROM row2.value)
             END AS __columns__,
-            (COALESCE("${this.queryId}_new", ROW("${this.queryId}_cache".*)::"${this.queryId}_new")).*
+            (COALESCE("${this.queryId}_new", ROW("${this.queryId}_cache".*)::"${this.queryId}_new")).${this.options.mode === 'id' ? `"${this.options.uniqueColumn}"` : '*'}
             FROM "${this.queryId}_cache" FULL OUTER JOIN "${this.queryId}_new" ON ("${this.queryId}_cache"."${this.options.uniqueColumn}"="${this.queryId}_new"."${this.options.uniqueColumn}")
             WHERE "${this.queryId}_cache" IS NULL OR "${this.queryId}_new" IS NULL OR "${this.queryId}_cache" OPERATOR(pg_catalog.*<>) "${this.queryId}_new";
           DROP TABLE "${this.queryId}_cache";
