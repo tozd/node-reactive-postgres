@@ -859,6 +859,9 @@ class Manager extends EventEmitter {
         }
       }
 
+      // All sources should be released when we called "stop" on all handles.
+      assert(this._sources.size === 0, "\"sources\" should be empty.");
+
       // They should all be removed now through "end" callbacks when we
       // called "stop" on all handles.
       assert(this._handlesForQuery.size === 0, "\"handlesForQuery\" should be empty.");
