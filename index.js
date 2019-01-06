@@ -12,10 +12,14 @@ const DEFAULT_QUERY_OPTIONS = {
   uniqueColumn: 'id',
   refreshThrottleWait: 100, // ms
   mode: 'id',
-  // TODO: Should batch size be on the number of rows to fetch and not number of changes?
-  batchSize: 0,
   types: null,
 };
+
+const OP_MAP = new Map([
+  [1, 'insert'],
+  [2, 'update'],
+  [3, 'delete'],
+]);
 
 // TODO: Should we expose an event that the source has changed?
 // TODO: Should we allow disabling automatic refresh?
@@ -38,9 +42,6 @@ class ReactiveQueryHandle extends Readable {
     this._isStream = false;
     this._started = false;
     this._stopped = false;
-    this._dirty = false;
-    this._batch = [];
-    this._readyPending = false;
     this._sources = null;
     this._throttleTimestamp = 0;
     this._throttleTimeout = null;
@@ -85,34 +86,6 @@ class ReactiveQueryHandle extends Readable {
 
     this._sources = [...this._extractSources(queryExplanation)].sort();
 
-    await this.manager.client.lock.acquireAsync();
-    try {
-      await this.manager.client.query(`
-        START TRANSACTION;
-        LISTEN "${this.queryId}_query_ready";
-        LISTEN "${this.queryId}_query_changed";
-        LISTEN "${this.queryId}_query_refreshed";
-        COMMIT;
-      `);
-    }
-    catch (error) {
-      this._stopped = true;
-
-      await this.manager.client.query(`
-        ROLLBACK;
-      `);
-
-      if (!this._isStream) {
-        this.emit('error', error);
-        this.emit('stop', error);
-      }
-
-      throw error;
-    }
-    finally {
-      await this.manager.client.lock.release();
-    }
-
     // We are just starting, how could it be true?
     assert(!this._refreshInProgress);
     // We set the flag so that any source changed event gets postponed.
@@ -141,27 +114,28 @@ class ReactiveQueryHandle extends Readable {
       throw error;
     }
 
+    let initialChanges;
     await this.client.lock.acquireAsync();
     try {
-      // We create a temporary materialized view based on a query, but without data, just
-      // structure. We add triggers to notify the client about changes the materialized view.
-      // We then refresh the materialized view for the first time.
-      // We then send "refresh" and "ready" notifications. Because we do that after refresh,
-      // it is guaranteed that they will arrive after any notifications made by refresh.
-      await this.client.query(`
-        START TRANSACTION;
-        CREATE TEMPORARY MATERIALIZED VIEW "${this.queryId}_view" AS ${this.query} WITH NO DATA;
-        CREATE UNIQUE INDEX "${this.queryId}_view_id" ON "${this.queryId}_view" ("${this.options.uniqueColumn}");
-        CREATE TRIGGER "${this.queryId}_query_changed_insert" AFTER INSERT ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.uniqueColumn}');
-        CREATE TRIGGER "${this.queryId}_query_changed_update" AFTER UPDATE ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.uniqueColumn}');
-        CREATE TRIGGER "${this.queryId}_query_changed_delete" AFTER DELETE ON "${this.queryId}_view" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_query_changed('${this.queryId}', '${this.options.uniqueColumn}');
-        REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
-        NOTIFY "${this.queryId}_query_refreshed", '{}';
-        NOTIFY "${this.queryId}_query_ready", '{}';
-        COMMIT;
-      `);
+      // We create a temporary materialized view based on a query.
+      // We create a temporary table into which triggers copy changes during refresh.
+      // We create those triggers. And then we select initial results.
+      const results = await this.client.query({
+        text: `
+          START TRANSACTION;
+          CREATE TEMPORARY MATERIALIZED VIEW "${this.queryId}_view" AS ${this.query};
+          CREATE UNIQUE INDEX "${this.queryId}_view_id" ON "${this.queryId}_view" ("${this.options.uniqueColumn}");
+          CREATE TEMPORARY TABLE "${this.queryId}_changes" (__op__ SMALLINT NOT NULL, LIKE "${this.queryId}_view" EXCLUDING CONSTRAINTS EXCLUDING DEFAULTS EXCLUDING INDEXES);
+          CREATE TRIGGER "${this.queryId}_query_changed_insert" AFTER INSERT ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.store_changes('${this.mode}', '${this.queryId}_changes', '${this.options.uniqueColumn}');
+          CREATE TRIGGER "${this.queryId}_query_changed_update" AFTER UPDATE ON "${this.queryId}_view" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.store_changes('${this.mode}', '${this.queryId}_changes', '${this.options.uniqueColumn}');
+          CREATE TRIGGER "${this.queryId}_query_changed_delete" AFTER DELETE ON "${this.queryId}_view" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.store_changes('${this.mode}', '${this.queryId}_changes', '${this.options.uniqueColumn}');
+          SELECT 1 AS __op__, * FROM "${this.queryId}_view";
+          COMMIT;
+        `,
+        types: this.types,
+      });
 
-      this._refreshInProgress = false;
+      initialChanges = results[7].rows;
     }
     catch (error) {
       this._stopped = true;
@@ -185,6 +159,16 @@ class ReactiveQueryHandle extends Readable {
     if (!this._isStream) {
       this.emit('start');
     }
+
+    this._processData(initialChanges);
+    if (this._isStream) {
+      this._streamPush({op: 'ready'});
+    }
+    else {
+      this.emit('ready');
+    }
+
+    this._refreshInProgress = false;
 
     // If we successfully started, let us retry processing a source
     // changed event, if it happened while we were starting. If there was
@@ -224,32 +208,6 @@ class ReactiveQueryHandle extends Readable {
       this._throttleTimeout = null;
     }
 
-    await this.manager.client.lock.acquireAsync();
-    try {
-      await this.manager.client.query(`
-        START TRANSACTION;
-        UNLISTEN "${this.queryId}_query_ready";
-        UNLISTEN "${this.queryId}_query_changed";
-        UNLISTEN "${this.queryId}_query_refreshed";
-        COMMIT;
-      `);
-    }
-    catch (error) {
-      await this.manager.client.query(`
-        ROLLBACK;
-      `);
-
-      if (!this._isStream) {
-        this.emit('error', error);
-        this.emit('stop', error);
-      }
-
-      throw error;
-    }
-    finally {
-      await this.manager.client.lock.release();
-    }
-
     try {
       // We drop triggers for each source not in a transaction, and especially not all of them
       // at once so that we do not have to lock all sources at the same time and potentially
@@ -272,6 +230,7 @@ class ReactiveQueryHandle extends Readable {
     try {
       await this.client.query(`
         DROP MATERIALIZED VIEW IF EXISTS "${this.queryId}_view" CASCADE;
+        DROP TABLE "${this.queryId}_changes" CASCADE;
       `);
     }
     catch (error) {
@@ -291,259 +250,27 @@ class ReactiveQueryHandle extends Readable {
     }
   }
 
-  async _onQueryReady(payload) {
-    if (!this._started || this._stopped) {
-      return;
-    }
-
-    this._readyPending = true;
-  }
-
-  async _onQueryRefreshed(payload) {
-    if (!this._started || this._stopped) {
-      return;
-    }
-
-    if (this._dirty) {
-      this._dirty = false;
-      await this._processBatch(true);
+  _processData(changes) {
+    for (const row of changes) {
+      const op = OP_MAP.get(row.__op__);
+      assert(op, `Unexpected query changed op '${row.__op__}'.`);
+      delete row.__op__;
       if (this._isStream) {
-        this._streamPush({op: 'refresh'});
+        this._streamPush({
+          op: op,
+          row,
+        });
       }
       else {
-        this.emit('refresh');
-      }
-      if (this._readyPending) {
-        this._readyPending = false;
-        if (this._isStream) {
-          this._streamPush({op: 'ready'});
-        }
-        else {
-          this.emit('ready');
-        }
+        this.emit(op, row);
       }
     }
-  }
 
-  async _onQueryChanged(payload) {
-    if (!this._started || this._stopped) {
-      return;
-    }
-
-    if (payload.op === 'insert' || payload.op === 'update' || payload.op === 'delete') {
-      this._dirty = true;
-      this._batch.push(payload);
-      await this._processBatch(false);
+    if (this._isStream) {
+      this._streamPush({op: 'refresh'});
     }
     else {
-      console.error(`Unknown query changed op '${payload.op}'.`);
-    }
-  }
-
-  async _processBatch(isRefresh) {
-    // When only ID is requested we do not need to fetch data, so we do not batch anything.
-    if (this.options.mode === 'id') {
-      this._processBatchIdMode();
-    }
-    else if (this.options.batchSize < 1 && isRefresh) {
-      await this._processBatchFetchMode();
-    }
-    else if (this.options.batchSize > 0 && this._batch.length >= this.options.batchSize) {
-      await this._processBatchFetchMode();
-    }
-  }
-
-  async flush() {
-    if (this._stopped) {
-      // This method is not returning anything, so we just ignore the call.
-      return;
-    }
-    if (!this._started) {
-      throw new Error("Query has not been started.");
-    }
-
-    if (this.options.mode === 'id') {
-      this._processBatchIdMode();
-    }
-    else {
-      await this._processBatchFetchMode();
-    }
-  }
-
-  _processBatchIdMode() {
-    while (this._batch.length) {
-      const payload = this._batch.shift();
-
-      const row = {};
-      row[this.options.uniqueColumn] = payload.id;
-
-      if (this._isStream) {
-        delete payload.id;
-        payload.row = row;
-      }
-
-      if (payload.op === 'insert') {
-        if (this._isStream) {
-          this._streamPush(payload);
-        }
-        else {
-          this.emit('insert', row);
-        }
-      }
-      else if (payload.op === 'update') {
-        if (this._isStream) {
-          this._streamPush(payload);
-        }
-        else {
-          this.emit('update', row, payload.columns);
-        }
-      }
-      else if (payload.op === 'delete') {
-        if (this._isStream) {
-          this._streamPush(payload);
-        }
-        else {
-          this.emit('delete', row);
-        }
-      }
-      else {
-        assert.fail(`Unexpected query changed op '${payload.op}'.`);
-      }
-    }
-  }
-
-  async _processBatchFetchMode() {
-    if (!this._batch.length) {
-      return;
-    }
-
-    // Copy to a local variable.
-    const batch = this._batch;
-    this._batch = [];
-
-    const idsToFetchForInsert = new Set();
-    const idsToFetchForUpdate = new Set();
-    const columnsToFetchForUpdate = new Set();
-    for (const payload of batch) {
-      if (payload.op === 'insert') {
-        idsToFetchForInsert.add(payload.id);
-      }
-      else if (payload.op === 'update') {
-        idsToFetchForUpdate.add(payload.id);
-        for (const columnName of payload.columns) {
-          columnsToFetchForUpdate.add(columnName);
-        }
-      }
-    }
-
-    // Always fetch ID column.
-    columnsToFetchForUpdate.add(this.options.uniqueColumn);
-
-    // "idsToFetchForInsert" and "idsToFetchForUpdate" should be disjoint and
-    // this is true because we are fetching inside one refresh.
-
-    const rows = new Map();
-    if (this.options.mode === 'changed') {
-      const updateColumns = '"' + [...columnsToFetchForUpdate].join('", "') + '"';
-
-      // We do one query for inserted rows.
-      let response = await this.client.query({
-        text: `
-          SELECT * FROM "${this.queryId}_view" WHERE "${this.options.uniqueColumn}"=ANY($1);
-        `,
-        values: [[...idsToFetchForInsert]],
-        types: this.options.types,
-      });
-
-      for (const row of response.rows) {
-        rows.set(row[this.options.uniqueColumn], row);
-      }
-
-      // And we do one query for updated rows. Here we might be able to fetch less columns.
-      response = await this.client.query({
-        text: `
-          SELECT ${updateColumns} FROM "${this.queryId}_view" WHERE "${this.options.uniqueColumn}"=ANY($1);
-        `,
-        values: [[...idsToFetchForUpdate]],
-        types: this.options.types,
-      });
-
-      for (const row of response.rows) {
-        rows.set(row[this.options.uniqueColumn], row);
-      }
-    }
-    else if (this.options.mode === 'full') {
-      // We can just do one query.
-      const response = await this.client.query({
-        text: `
-          SELECT * FROM "${this.queryId}_view" WHERE "${this.options.uniqueColumn}"=ANY($1);
-        `,
-        values: [[...idsToFetchForInsert, ...idsToFetchForUpdate]],
-        types: this.options.types,
-      });
-
-      for (const row of response.rows) {
-        rows.set(row[this.options.uniqueColumn], row);
-      }
-    }
-    else {
-      assert.fail(`Unexpected query mode '${this.options.mode}'.`);
-    }
-
-    for (const payload of batch) {
-      if (payload.op === 'insert') {
-        const row = rows.get(payload.id);
-        // It could happen that row was deleted in meantime and we could not fetch it.
-        // We do not do anything for now and leave it to a future notification to handle this.
-        if (row) {
-          if (this._isStream) {
-            delete payload.id;
-            payload.row = row;
-            this._streamPush(payload);
-          }
-          else {
-            this.emit('insert', row);
-          }
-        }
-      }
-      else if (payload.op === 'update') {
-        const row = rows.get(payload.id);
-        // It could happen that row was deleted in meantime and we could not fetch it.
-        // We do not do anything for now and leave it to a future notification to handle this.
-        if (row) {
-          // Different rows might have different columns updated. We had to fetch
-          // a superset of all changed columns and here we have to remove those
-          // columns which have not changed for a particular row.
-          for (const key of Object.keys(row)) {
-            if (key !== this.options.uniqueColumn && !payload.columns.includes(key)) {
-              delete row[key];
-            }
-          }
-          if (this._isStream) {
-            delete payload.id;
-            payload.row = row;
-            this._streamPush(payload);
-          }
-          else {
-            this.emit('update', row, payload.columns);
-          }
-        }
-      }
-      else if (payload.op === 'delete') {
-        const row = {};
-        row[this.options.uniqueColumn] = payload.id;
-        if (this._isStream) {
-          delete payload.id;
-          payload.row = row;
-          this._streamPush(payload);
-        }
-        else {
-          this.emit('delete', row);
-        }
-      }
-      else {
-        assert.fail(`Unexpected query changed op '${payload.op}'.`);
-      }
+      this.emit('refresh');
     }
   }
 
@@ -562,15 +289,22 @@ class ReactiveQueryHandle extends Readable {
     }
     this._refreshInProgress = true;
 
+    let changes;
     await this.client.lock.acquireAsync();
     try {
-      await this.client.query(`
-        START TRANSACTION;
-        REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
-        NOTIFY "${this.queryId}_query_refreshed", '{}';
-        COMMIT;
-      `);
-      this._refreshInProgress = false;
+      // Refresh populates the temporary table with changes.
+      // We delete changes from it and return them.
+      const results = await this.client.query({
+        text: `
+          START TRANSACTION;
+          REFRESH MATERIALIZED VIEW CONCURRENTLY "${this.queryId}_view";
+          DELETE FROM "${this.queryId}_changes" RETURNING *;
+          COMMIT;
+        `,
+        types: this.types,
+      });
+
+      changes = results[2].rows;
     }
     catch (error) {
       this._refreshInProgress = false;
@@ -585,6 +319,10 @@ class ReactiveQueryHandle extends Readable {
       await this.client.lock.release();
     }
 
+    this._processData(changes);
+
+    this._refreshInProgress = false;
+
     // If we successfully refreshed, let us retry processing a source
     // changed event, if it happened while we were refreshing. If there was
     // an error things are probably going bad anyway so one skipped retry
@@ -592,7 +330,7 @@ class ReactiveQueryHandle extends Readable {
     this._retrySourceChanged();
   }
 
-  _onSourceChanged(payload) {
+  _onSourceChanged() {
     if (!this._started || this._stopped) {
       return;
     }
@@ -720,7 +458,7 @@ class ReactiveQueryHandle extends Readable {
   _retrySourceChanged() {
     if (this._sourceChangedPending) {
       this._sourceChangedPending = false;
-      this._onSourceChanged(null);
+      this._onSourceChanged();
     }
   }
 }
@@ -731,7 +469,7 @@ const DEFAULT_MANAGER_OPTIONS = {
   handleClass: ReactiveQueryHandle,
 };
 
-const NOTIFICATION_REGEX = /^(.+)_(query_ready|query_changed|query_refreshed|source_changed)$/;
+const NOTIFICATION_REGEX = /^(.+)_(source_changed)$/;
 
 // TODO: Disconnect idle clients after some time.
 //       Idle meaning that they do not have any reactive queries using them.
@@ -790,8 +528,8 @@ class Manager extends EventEmitter {
 
       await this.client.connect();
 
-      // We define functions as temporary for every client so that triggers using
-      // them are dropped when the client disconnects (session ends).
+      // We define the function as temporary for every client so that triggers using
+      // it are dropped when the client disconnects (session ends).
       await this.client.query(`
         CREATE OR REPLACE FUNCTION pg_temp.notify_source_changed() RETURNS TRIGGER LANGUAGE plpgsql AS $$
           DECLARE
@@ -1053,24 +791,23 @@ class Manager extends EventEmitter {
 
     await client.connect();
 
-    // We define functions as temporary for every client so that triggers using
-    // them are dropped when the client disconnects (session ends).
+    // We define the function as temporary for every client so that triggers using
+    // it are dropped when the client disconnects (session ends).
     // We can use INNER JOIN in "notify_query_changed" because we know that column names
     // are the same in "new_table" and "old_table", and we are joining on column names.
-    // There should always be something different, so "array_agg" should never return NULL
-    // in "notify_query_changed", but we still make sure this is so with COALESCE.
     await client.query(`
-      CREATE OR REPLACE FUNCTION pg_temp.notify_query_changed() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+      CREATE OR REPLACE FUNCTION pg_temp.store_changes() RETURNS TRIGGER LANGUAGE plpgsql AS $$
         DECLARE
-          query_id TEXT := TG_ARGV[0];
-          primary_column TEXT := TG_ARGV[1];
+          mode TEXT = TG_ARGV[0];
+          changes_table TEXT := TG_ARGV[1];
+          primary_column TEXT := TG_ARGV[2];
         BEGIN
           IF (TG_OP = 'INSERT') THEN
-            EXECUTE 'SELECT pg_notify(''' || query_id || '_query_changed'', row_to_json(changes)::text) FROM (SELECT ''insert'' AS op, "' || primary_column || '" AS id FROM new_table) AS changes';
+            EXECUTE 'INSERT INTO "' || changes_table || '" SELECT 1 AS __op__, * FROM new_table';
           ELSIF (TG_OP = 'UPDATE') THEN
-            EXECUTE 'SELECT pg_notify(''' || query_id || '_query_changed'', row_to_json(changes)::text) FROM (SELECT ''update'' AS op, new_table."' || primary_column || '" AS id, (SELECT COALESCE(array_agg(row1.key), ARRAY[]::TEXT[]) FROM each(hstore(new_table)) AS row1 INNER JOIN each(hstore(old_table)) AS row2 ON (row1.key=row2.key) WHERE row1.value IS DISTINCT FROM row2.value) AS columns FROM new_table JOIN old_table ON (new_table."' || primary_column || '"=old_table."' || primary_column || '")) AS changes';
+            EXECUTE 'INSERT INTO "' || changes_table || '" SELECT 2 AS __op__, * FROM new_table';
           ELSIF (TG_OP = 'DELETE') THEN
-            EXECUTE 'SELECT pg_notify(''' || query_id || '_query_changed'', row_to_json(changes)::text) FROM (SELECT ''delete'' AS op, "' || primary_column || '" AS id FROM old_table) AS changes';
+            EXECUTE 'INSERT INTO "' || changes_table || '" SELECT 3 AS __op__, * FROM old_table';
           END IF;
           RETURN NULL;
         END
@@ -1125,38 +862,17 @@ class Manager extends EventEmitter {
 
     const payload = JSON.parse(message.payload);
 
-    const id = match[1];
+    const managerId = match[1];
     const notificationType = match[2];
+
+    assert(managerId === this.managerId, "Notification id should match manager's id.");
 
     if (notificationType === 'source_changed') {
       // We ignore notifications for unknown sources.
       for (const queryId of (this._sources.get(payload.name) || [])) {
         const handle = this._getHandleForQuery(queryId);
-        handle._onSourceChanged(payload);
+        handle._onSourceChanged();
       }
-      return;
-    }
-
-    const handle = this._getHandleForQuery(id);
-    if (!handle) {
-      console.warn(`QueryId '${id}' without a handle.`);
-      return;
-    }
-
-    if (notificationType === 'query_ready') {
-      handle._onQueryReady(payload).catch((error) => {
-        this.emit('error', error);
-      });
-    }
-    else if (notificationType === 'query_changed') {
-      handle._onQueryChanged(payload).catch((error) => {
-        this.emit('error', error);
-      });
-    }
-    else if (notificationType === 'query_refreshed') {
-      handle._onQueryRefreshed(payload).catch((error) => {
-        this.emit('error', error);
-      });
     }
     else {
       console.warn(`Unknown notification type '${notificationType}'.`);
