@@ -555,6 +555,11 @@ class ReactiveQueryHandle extends Readable {
       throw new Error("Query has not been started.");
     }
 
+    // Exit early and not try to lock.
+    if (this._refreshInProgress) {
+      return;
+    }
+
     await this.client.lock.acquireAsync();
     if (this._refreshInProgress) {
       await this.client.lock.release();
