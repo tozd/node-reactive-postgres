@@ -10,7 +10,7 @@ const {randomId} = require('./random');
 const DEFAULT_QUERY_OPTIONS = {
   // TODO: Allow multi-column unique index as well.
   uniqueColumn: 'id',
-  refreshThrottleWait: 100, // ms
+  refreshThrottleWait: 300, // ms
   mode: 'id',
   types: null,
 };
