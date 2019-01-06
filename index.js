@@ -23,7 +23,6 @@ const DEFAULT_QUERY_OPTIONS = {
 class ReactiveQueryHandle extends Readable {
   constructor(manager, client, queryId, query, options) {
     super({
-      autoDestroy: options.autoDestroy,
       // We disable internal buffering in "Readable" because we buffer ourselves.
       // We want to detect backpressure as soon as possible so that we do not refresh unnecessary.
       highWaterMark: 0,
