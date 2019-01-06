@@ -322,12 +322,11 @@ Event emitted when the stream has been destroyed.
 ## Related projects
 
 * [pg-live-select](https://github.com/numtel/pg-live-select) – when the query's sources change, the client reruns the
-  query to obtain updated rows, which are identified through hashes of their complete content and client then computes changes,
+  query to obtain updated rows, which are identified through hashes of their full content and client then computes changes,
   on the other hand, this package maintains cached results of the query in a temporary materialized view and reuses
-  computation of a diff inside `REFRESH MATERIALIZED VIEW CONCURRENTLY` PostgreSQL command, only information which rows
-  and columns changed are first provided to the client and client can then query only those changed columns
+  computation of a diff inside `REFRESH MATERIALIZED VIEW CONCURRENTLY` PostgreSQL command
 * [pg-live-query](https://github.com/nothingisdead/pg-live-query) – adds revision columns to sources and additional
   temporary table which stores information how those revisions map to queries, all this then allows computing changes
-  inside the database, but the approach does not allow 
+  inside the database, but it seems it does not work with all queries
 * [pg-query-observer](https://github.com/Richie765/pg-query-observer) – it seems like a bit cleaned and updated version
   of `pg-live-select`, but buggy and does not work with multiple parallel queries
