@@ -654,6 +654,8 @@ class Manager extends EventEmitter {
         if (index >= 0) {
           this._pendingClients.splice(index, 1);
         }
+      }).catch((error) => {
+        this.emit('error', error);
       });
       this._pendingClients.push(clientPromise);
     }
