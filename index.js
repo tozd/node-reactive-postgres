@@ -974,15 +974,6 @@ class Manager extends EventEmitter {
             CREATE TRIGGER "${this.managerId}_source_changed_${source}_delete" AFTER DELETE ON "${source}" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
             COMMIT;
           `);
-
-          try {
-            await this.client.query(`
-              CREATE TRIGGER "${this.managerId}_source_changed_${source}_truncate" AFTER TRUNCATE ON "${source}" FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
-            `);
-          }
-          // Ignoring errors. The source might not support TRUNCATE trigger.
-          // For example, tables do, but views do not.
-          catch (error) {}
         }
         catch (error) {
           await this.client.query(`
@@ -991,6 +982,15 @@ class Manager extends EventEmitter {
 
           throw error;
         }
+
+        try {
+          await this.client.query(`
+            CREATE TRIGGER "${this.managerId}_source_changed_${source}_truncate" AFTER TRUNCATE ON "${source}" FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
+          `);
+        }
+        // Ignoring errors. The source might not support TRUNCATE trigger.
+        // For example, tables do, but views do not.
+        catch (error) {}
       }
       catch (error) {
         this.emit('error', error);
