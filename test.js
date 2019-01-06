@@ -57,17 +57,17 @@ async function sleep(ms) {
         ''
       );
     $$;
-    CREATE TABLE IF NOT EXISTS posts (
+    DROP TABLE IF EXISTS comments CASCADE;
+    DROP TABLE IF EXISTS posts CASCADE;
+    CREATE TABLE posts (
       "_id" CHAR(17) PRIMARY KEY DEFAULT random_id(),
       "body" JSONB NOT NULL DEFAULT '{}'::JSONB
     );
-    CREATE TABLE IF NOT EXISTS comments (
+    CREATE TABLE comments (
       "_id" CHAR(17) PRIMARY KEY DEFAULT random_id(),
       "postId" CHAR(17) NOT NULL REFERENCES posts("_id"),
       "body" JSONB NOT NULL DEFAULT '{}'::JSONB
     );
-    DELETE FROM comments;
-    DELETE FROM posts;
   `);
 
   let result;
