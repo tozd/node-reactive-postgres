@@ -91,7 +91,6 @@ class ReactiveQueryHandle extends Readable {
         LISTEN "${this.queryId}_query_ready";
         LISTEN "${this.queryId}_query_changed";
         LISTEN "${this.queryId}_query_refreshed";
-        LISTEN "${this.queryId}_source_changed";
         COMMIT;
       `);
     }
@@ -113,40 +112,41 @@ class ReactiveQueryHandle extends Readable {
       await this.manager.client.lock.release();
     }
 
-    await this.client.lock.acquireAsync();
     // We are just starting, how could it be true?
     assert(!this._refreshInProgress);
     // We set the flag so that any source changed event gets postponed.
     this._refreshInProgress = true;
+
     try {
-      // We drop triggers for each source in its own transaction instead of all of them
+      // We create triggers for each source in its own transaction instead of all of them
       // at once so that we do not have to lock all sources at the same time and potentially
       // introduce a deadlock if any of those sources is also used in some other materialized
       // view at the same time and it is just being refreshed. This means that source changed
       // events could already start arriving before we have a materialized view created,
       // but we have them postponed by setting "_refreshInProgress" to "true".
       for (const source of this._sources) {
-        await this.client.query(`
-          START TRANSACTION;
-          CREATE TRIGGER "${this.queryId}_source_changed_${source}_insert" AFTER INSERT ON "${source}" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
-          CREATE TRIGGER "${this.queryId}_source_changed_${source}_update" AFTER UPDATE ON "${source}" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
-          CREATE TRIGGER "${this.queryId}_source_changed_${source}_delete" AFTER DELETE ON "${source}" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
-          COMMIT;
-        `);
+        await this.manager.useSource(this.queryId, source);
+      }
+    }
+    catch (error) {
+      this._stopped = true;
+      this._refreshInProgress = false;
 
-        try {
-          await this.client.query(`
-            CREATE TRIGGER "${this.queryId}_source_changed_${source}_truncate" AFTER TRUNCATE ON "${source}" FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.queryId}');
-          `);
-        }
-        // Ignoring errors. The source might not support TRUNCATE trigger.
-        // For example, tables do, but views do not.
-        catch (error) {}
+      if (!this._isStream) {
+        this.emit('error', error);
+        this.emit('stop', error);
       }
 
+      throw error;
+    }
+
+    await this.client.lock.acquireAsync();
+    try {
       // We create a temporary materialized view based on a query, but without data, just
       // structure. We add triggers to notify the client about changes the materialized view.
       // We then refresh the materialized view for the first time.
+      // We then send "refresh" and "ready" notifications. Because we do that after refresh,
+      // it is guaranteed that they will arrive after any notifications made by refresh.
       await this.client.query(`
         START TRANSACTION;
         CREATE TEMPORARY MATERIALIZED VIEW "${this.queryId}_view" AS ${this.query} WITH NO DATA;
@@ -205,6 +205,8 @@ class ReactiveQueryHandle extends Readable {
     }
   }
 
+  // TODO: Should we try to cleanup as much as possible even when there are errors?
+  //       Instead of stopping cleanup at the first error?
   async _stop(error) {
     if (this._stopped) {
       return;
@@ -228,7 +230,6 @@ class ReactiveQueryHandle extends Readable {
         UNLISTEN "${this.queryId}_query_ready";
         UNLISTEN "${this.queryId}_query_changed";
         UNLISTEN "${this.queryId}_query_refreshed";
-        UNLISTEN "${this.queryId}_source_changed";
         COMMIT;
       `);
     }
@@ -248,20 +249,26 @@ class ReactiveQueryHandle extends Readable {
       await this.manager.client.lock.release();
     }
 
-    await this.client.lock.acquireAsync();
     try {
-      // We drop triggers for each source in its own transaction instead of all of them
+      // We drop triggers for each source not in a transaction, and especially not all of them
       // at once so that we do not have to lock all sources at the same time and potentially
       // introduce a deadlock if any of those sources is also used in some other materialized
       // view at the same time and it is just being refreshed.
       for (const source of this._sources) {
-        await this.client.query(`
-          DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_insert" ON "${source}";
-          DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_update" ON "${source}";
-          DROP TRIGGER IF EXISTS "${this.queryId}_source_changed_${source}_delete" ON "${source}";
-        `);
+        await this.manager.releaseSource(this.queryId, source);
+      }
+    }
+    catch (error) {
+      if (!this._isStream) {
+        this.emit('error', error);
+        this.emit('stop', error);
       }
 
+      throw error;
+    }
+
+    await this.client.lock.acquireAsync();
+    try {
       await this.client.query(`
         DROP MATERIALIZED VIEW IF EXISTS "${this.queryId}_view" CASCADE;
       `);
@@ -737,6 +744,8 @@ class Manager extends EventEmitter {
       throw new Error("\"maxConnections\" option has to be larger than 0.")
     }
 
+    this.managerId = null;
+
     // Manager's client used for notifications. Queries use their
     // own set of clients from a client pool, "this._clients".
     this.client = null;
@@ -748,6 +757,8 @@ class Manager extends EventEmitter {
     // Map between a client and a number of reactive queries using it.
     this._clients = new Map();
     this._pendingClients = [];
+    // Map between a source name and a list of ids of reactive queries using it.
+    this._sources = new Map();
   }
 
   async start() {
@@ -759,6 +770,8 @@ class Manager extends EventEmitter {
     }
 
     this._started = true;
+
+    this.managerId = await randomId();
 
     try {
       this.client = new Client(this.options.connectionConfig);
@@ -776,11 +789,42 @@ class Manager extends EventEmitter {
 
       await this.client.connect();
 
-      this.emit('connect', this.client);
+      // We define functions as temporary for every client so that triggers using
+      // them are dropped when the client disconnects (session ends).
+      await this.client.query(`
+        CREATE OR REPLACE FUNCTION pg_temp.notify_source_changed() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+          DECLARE
+            manager_id TEXT := TG_ARGV[0];
+          BEGIN
+            IF (TG_OP = 'INSERT') THEN
+              PERFORM * FROM new_table LIMIT 1;
+              IF FOUND THEN
+                EXECUTE 'NOTIFY "' || manager_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
+              END IF;
+            ELSIF (TG_OP = 'UPDATE') THEN
+              PERFORM * FROM ((TABLE new_table EXCEPT TABLE new_table) UNION ALL (TABLE new_table EXCEPT TABLE old_table)) AS differences LIMIT 1;
+              IF FOUND THEN
+                EXECUTE 'NOTIFY "' || manager_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
+              END IF;
+            ELSIF (TG_OP = 'DELETE') THEN
+              PERFORM * FROM old_table LIMIT 1;
+              IF FOUND THEN
+                EXECUTE 'NOTIFY "' || manager_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
+              END IF;
+            ELSIF (TG_OP = 'TRUNCATE') THEN
+              EXECUTE 'NOTIFY "' || manager_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
+            END IF;
+            RETURN NULL;
+          END
+        $$;
+      `);
 
+      // TODO: It is possible that the user does not have permissions to create extensions.
       await this.client.query(`
         CREATE EXTENSION IF NOT EXISTS hstore;
       `);
+
+      this.emit('connect', this.client);
     }
     catch (error) {
       this._stopped = true;
@@ -794,6 +838,8 @@ class Manager extends EventEmitter {
     this.emit('start');
   }
 
+  // TODO: Should we try to cleanup as much as possible even when there are errors?
+  //       Instead of stopping cleanup at the first error?
   async stop(error) {
     if (this._stopped) {
       return;
@@ -903,6 +949,93 @@ class Manager extends EventEmitter {
     this._clients.set(client, this._clients.get(client) - 1);
   }
 
+  async useSource(queryId, source) {
+    if (!this._sources.has(source)) {
+      this._sources.set(source, []);
+    }
+    this._sources.get(source).push(queryId);
+
+    // The first time this source is being used.
+    if (this._sources.get(source).length === 1) {
+      await this.client.lock.acquireAsync();
+      try {
+        await this.client.query(`
+          LISTEN "${this.managerId}_source_changed";
+        `);
+
+        try {
+          await this.client.query(`
+            START TRANSACTION;
+            CREATE TRIGGER "${this.managerId}_source_changed_${source}_insert" AFTER INSERT ON "${source}" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
+            CREATE TRIGGER "${this.managerId}_source_changed_${source}_update" AFTER UPDATE ON "${source}" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
+            CREATE TRIGGER "${this.managerId}_source_changed_${source}_delete" AFTER DELETE ON "${source}" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
+            COMMIT;
+          `);
+
+          try {
+            await this.client.query(`
+              CREATE TRIGGER "${this.managerId}_source_changed_${source}_truncate" AFTER TRUNCATE ON "${source}" FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
+            `);
+          }
+          // Ignoring errors. The source might not support TRUNCATE trigger.
+          // For example, tables do, but views do not.
+          catch (error) {}
+        }
+        catch (error) {
+          await this.client.query(`
+            ROLLBACK;
+          `);
+
+          throw error;
+        }
+      }
+      catch (error) {
+        this.emit('error', error);
+
+        throw error;
+      }
+      finally {
+        await this.client.lock.release();
+      }
+    }
+  }
+
+  async releaseSource(queryId, source) {
+    const handles = this._sources.get(source) || [];
+    const index = handles.indexOf(queryId);
+    if (index >= 0) {
+      handles.splice(index, 1);
+    }
+    else {
+      console.warn(`Releasing a source '${source}' which is not being used by queryId '${queryId}'.`);
+      return;
+    }
+
+    // Source is not used by anyone anymore.
+    if (handles.length === 0) {
+      this._sources.delete(source);
+
+      await this.client.lock.acquireAsync();
+      try {
+        await this.client.query(`
+          UNLISTEN "${this.managerId}_source_changed";
+          DROP TRIGGER IF EXISTS "${this.managerId}_source_changed_${source}_insert" ON "${source}";
+          DROP TRIGGER IF EXISTS "${this.managerId}_source_changed_${source}_update" ON "${source}";
+          DROP TRIGGER IF EXISTS "${this.managerId}_source_changed_${source}_delete" ON "${source}";
+          DROP TRIGGER IF EXISTS "${this.managerId}_source_changed_${source}_truncate" ON "${source}";
+        `);
+      }
+      catch (error) {
+        this.emit('error', error);
+
+        throw error;
+      }
+      finally {
+        await this.client.lock.release();
+      }
+    }
+  }
+
   async _createClient() {
     const client = new Client(this.options.connectionConfig);
     client.lock = new AwaitLock();
@@ -922,9 +1055,6 @@ class Manager extends EventEmitter {
     // are the same in "new_table" and "old_table", and we are joining on column names.
     // There should always be something different, so "array_agg" should never return NULL
     // in "notify_query_changed", but we still make sure this is so with COALESCE.
-    // TODO: We could have only one set of "notify_source_changed" triggers per each source.
-    //       We could install them the first time but then leave them around. Clients subscribing
-    //       to shared notifications based on source name.
     await client.query(`
       CREATE OR REPLACE FUNCTION pg_temp.notify_query_changed() RETURNS TRIGGER LANGUAGE plpgsql AS $$
         DECLARE
@@ -937,31 +1067,6 @@ class Manager extends EventEmitter {
             EXECUTE 'SELECT pg_notify(''' || query_id || '_query_changed'', row_to_json(changes)::text) FROM (SELECT ''update'' AS op, new_table."' || primary_column || '" AS id, (SELECT COALESCE(array_agg(row1.key), ARRAY[]::TEXT[]) FROM each(hstore(new_table)) AS row1 INNER JOIN each(hstore(old_table)) AS row2 ON (row1.key=row2.key) WHERE row1.value IS DISTINCT FROM row2.value) AS columns FROM new_table JOIN old_table ON (new_table."' || primary_column || '"=old_table."' || primary_column || '")) AS changes';
           ELSIF (TG_OP = 'DELETE') THEN
             EXECUTE 'SELECT pg_notify(''' || query_id || '_query_changed'', row_to_json(changes)::text) FROM (SELECT ''delete'' AS op, "' || primary_column || '" AS id FROM old_table) AS changes';
-          END IF;
-          RETURN NULL;
-        END
-      $$;
-      CREATE OR REPLACE FUNCTION pg_temp.notify_source_changed() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-        DECLARE
-          query_id TEXT := TG_ARGV[0];
-        BEGIN
-          IF (TG_OP = 'INSERT') THEN
-            PERFORM * FROM new_table LIMIT 1;
-            IF FOUND THEN
-              EXECUTE 'NOTIFY "' || query_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
-            END IF;
-          ELSIF (TG_OP = 'UPDATE') THEN
-            PERFORM * FROM ((TABLE new_table EXCEPT TABLE new_table) UNION ALL (TABLE new_table EXCEPT TABLE old_table)) AS differences LIMIT 1;
-            IF FOUND THEN
-              EXECUTE 'NOTIFY "' || query_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
-            END IF;
-          ELSIF (TG_OP = 'DELETE') THEN
-            PERFORM * FROM old_table LIMIT 1;
-            IF FOUND THEN
-              EXECUTE 'NOTIFY "' || query_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
-            END IF;
-          ELSIF (TG_OP = 'TRUNCATE') THEN
-            EXECUTE 'NOTIFY "' || query_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
           END IF;
           RETURN NULL;
         END
@@ -1014,16 +1119,25 @@ class Manager extends EventEmitter {
       return;
     }
 
-    const queryId = match[1];
+    const payload = JSON.parse(message.payload);
+
+    const id = match[1];
     const notificationType = match[2];
 
-    const handle = this._getHandleForQuery(queryId);
-    if (!handle) {
-      console.warn(`QueryId '${queryId}' without a handle.`);
+    if (notificationType === 'source_changed') {
+      // We ignore notifications for unknown sources.
+      for (const queryId of (this._sources.get(payload.name) || [])) {
+        const handle = this._getHandleForQuery(queryId);
+        handle._onSourceChanged(payload);
+      }
       return;
     }
 
-    const payload = JSON.parse(message.payload);
+    const handle = this._getHandleForQuery(id);
+    if (!handle) {
+      console.warn(`QueryId '${id}' without a handle.`);
+      return;
+    }
 
     if (notificationType === 'query_ready') {
       handle._onQueryReady(payload).catch((error) => {
@@ -1039,9 +1153,6 @@ class Manager extends EventEmitter {
       handle._onQueryRefreshed(payload).catch((error) => {
         this.emit('error', error);
       });
-    }
-    else if (notificationType === 'source_changed') {
-      handle._onSourceChanged(payload);
     }
     else {
       console.error(`Unknown notification type '${notificationType}'.`);
