@@ -49,7 +49,7 @@ see [this benchmark tool](https://github.com/mitar/node-pg-reactivity-benchmark)
 
 * Queries require an unique column which serves to identify rows and
   changes to them. Which column this is is configured through
-  `uniqueColumn` query option. By default is `id`.
+  `uniqueColumn` query option. By default is `columns`.
 * Order of rows in query results are ignored when determining changes.
   Order still matters when selecting which rows are in query results
   through `ORDER BY X LIMIT Y` pattern. If you care about order of
@@ -111,8 +111,8 @@ per every `refreshThrottleWait` milliseconds
     control this delay based on requirements for a particular query
   * lower this value is, higher the load on the database will be, higher it is, lower the load
     will be
-* `mode`, default `id`: in which mode to operate, it can be:
-  * `id`: for every query results change, provide only which row and columns changed,
+* `mode`, default `columns`: in which mode to operate, it can be:
+  * `columns`: for every query results change, provide only which row and columns changed,
     this does not require an additional query to the database to fetch updated results data
   * `changed`: for every query results change, fetch and provide also updated results data,
     but only those columns which have changed
@@ -224,14 +224,14 @@ as part of one refresh have been emitted.
 ##### `'insert'` event `(row)`
 
 Event emitted when a new row has been added to the reactive query.
-`row` is provided as an argument. In `id` mode, `row` contains only the value
+`row` is provided as an argument. In `columns` mode, `row` contains only the value
 of the unique column of the row which has been inserted. In `changed` and `full` modes,
 `row` contains full row which has been inserted.
 
 ##### `'update'` event `(row, columns)`
 
 Event emitted when a row has been updated.
-`row` is provided as an argument. In `id` mode, `row` contains only the value
+`row` is provided as an argument. In `columns` mode, `row` contains only the value
 of the unique column of the row which has been updated. In `changed` mode, `row`
 contains also data for columns which have changed. In `full` mode, `row`
 contains the full updated row, both columns which have changed and those which have not.
@@ -239,8 +239,10 @@ contains the full updated row, both columns which have changed and those which h
 
 ##### `'delete'` event `(row)`
 
-Event emitted when a row has been deleted. `row` is provided as an argument and
-contains only the unique column of the row which has been deleted.
+Event emitted when a row has been deleted. `row` is provided as an argument.
+In `columns` mode, `row` contains only the value
+of the unique column of the row which has been deleted. In `changed` and `full` modes,
+`row` contains full row which has been deleted.
 
 ##### `'error'` event `(error)`
 
