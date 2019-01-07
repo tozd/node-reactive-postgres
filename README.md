@@ -2,11 +2,14 @@
 
 ## Installation
 
-Currently it requires a patched version of PostgreSQL. A [Docker image with
-patches applied is available](https://github.com/mitar/docker-postgres). Hopefully
-in the future these patches will be merged in.
-  * [Temporary materialized views](https://commitfest.postgresql.org/21/1951/)
-  * [Triggers on materialized views](https://commitfest.postgresql.org/21/1953/)
+This is a node.js package. You can install it using NPM:
+
+```bash
+$ npm install reactive-postgres
+```
+
+This package uses PostgreSQL. See [documentation](https://www.postgresql.org/docs/devel/tutorial-start.html)
+for more information how to install and use it.
 
 ## Usage
 
