@@ -62,7 +62,8 @@ see [this benchmark tool](https://github.com/mitar/node-pg-reactivity-benchmark)
   Ideally, refresh would be done only when it is known that a source change
   is really influencing the materialized view. Furthermore, materialized
   view could be updated in an incremental manner instead of doing a full
-  refresh.
+  refresh. See [#7](https://github.com/tozd/node-reactive-postgres/issues/7)
+  for more information.
 
 ## API
 
