@@ -11,5 +11,10 @@
   "devDependencies": {},
   "engines": {
     "node": ">=0.10.0"
+  },
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tozd/node-reactive-postgres.git"
   }
 }
