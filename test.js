@@ -1,4 +1,4 @@
-// docker run -d --name postgres -e POSTGRES_PASSWORD=pass -p 5432:5432 mitar/postgres:latest
+// docker run -d --name postgres -e POSTGRES_PASSWORD=pass -p 5432:5432 postgres:11.1
 
 const {Pool} = require('pg');
 const through2 = require('through2');
@@ -132,10 +132,6 @@ async function sleep(ms) {
 
   handle2.on('close', () => {
     console.log(new Date(), 'query pipe close', handle2.queryId);
-  });
-
-  handle2.on('end', () => {
-    console.log(new Date(), 'query pipe end', handle2.queryId);
   });
 
   handle2.on('error', (error) => {
