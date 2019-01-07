@@ -33,17 +33,36 @@ Reactive queries are implemented in the following manner:
 
 ## Performance
 
-* Memory use of node process is constant and does not grow with the number of rows in a
-  query result. This is achieved by caching a query using a temporary materialized view
-  in the database.
-
-This package has known performance issues:
-* A [deadlock or very long time to exit](https://github.com/tozd/node-reactive-postgres/issues/2).
-* [Response latency is suprisingly high in comparison with other projects](https://github.com/tozd/node-reactive-postgres/issues/3).
-
-For more information about performance comparisons of this package and related packages,
-see [this benchmark tool](https://github.com/mitar/node-pg-reactivity-benchmark) and
-[results at the end](https://github.com/mitar/node-pg-reactivity-benchmark#results).
+* Memory use of node.js process is
+  [very low, is constant and does not grow with the number of rows in query results](https://mitar.github.io/node-pg-reactivity-benchmark/viewer.html?results/reactive-postgres-id.json).
+  Moreover, node.js process also does no heavy computation
+  and mostly just passes data around. All this is achieved by caching a query using a
+  temporary table in the database instead of the client, and using a database query
+  to compare new and old query results.
+* Computing changes is done through one query, a very similar query to the one used
+  internally by `REFRESH MATERIALIZED VIEW CONCURRENTLY` PostgreSQL command.
+* Based on the design, the time to compute changes and provide them to the client
+  seems to be the lowest when comparing with other similar packages. For more
+  information about performance comparisons of this package and related packages,
+  see [this benchmark tool](https://github.com/mitar/node-pg-reactivity-benchmark) and
+  [results at the end](https://github.com/mitar/node-pg-reactivity-benchmark#results).
+* Because this package uses temporary tables, consider increasing
+  [`temp_buffers`](https://www.postgresql.org/docs/devel/runtime-config-resource.html#GUC-TEMP-BUFFERS)
+  PostgreSQL configuration so that there is more space for temporary tables in memory.
+* Multiple reactive queries share the same connection to the database.
+  So correctly configuring `maxConnections` is important. More connections there are,
+  higher load is on the database, but over more connections reactive queries can spread.
+* Similarly, you might consider increasing `refreshThrottleWait` for reactive queries for
+  which you can tolerate lower refresh rate and higher update latency. Moreover, making
+  too many refreshes for complex queries can saturate the database which then leads to
+  even higher delays. Paradoxically, having higher `refreshThrottleWait` could give you
+  lower delay in comparison with a saturated state.
+* Currently, when any of sources change in any manner, whole query is rerun
+  and results compared with cached results (after a throttling delay).
+  To improve this, refresh could be done only when it is known that a source change
+  is really influencing the results. Ideally, we could even compute changes to
+  results directly based on changes to sources. See
+  [#7](https://github.com/tozd/node-reactive-postgres/issues/7) for more information.
 
 ## Limitations
 
@@ -57,13 +76,6 @@ see [this benchmark tool](https://github.com/mitar/node-pg-reactivity-benchmark)
 * Queries cannot contain placeholders or be prepared. You can use
   `client.escapeLiteral(...)` function to escape values when constructing
   a query.
-* Currently, when any of sources change in any manner, a materialized view
-  used for reactive query is fully refreshed (after a throttling delay).
-  Ideally, refresh would be done only when it is known that a source change
-  is really influencing the materialized view. Furthermore, materialized
-  view could be updated in an incremental manner instead of doing a full
-  refresh. See [#7](https://github.com/tozd/node-reactive-postgres/issues/7)
-  for more information.
 
 ## API
 
