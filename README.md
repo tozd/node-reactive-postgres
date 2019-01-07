@@ -51,6 +51,8 @@ Reactive queries are implemented in the following manner:
 * Because this package uses temporary tables, consider increasing
   [`temp_buffers`](https://www.postgresql.org/docs/devel/runtime-config-resource.html#GUC-TEMP-BUFFERS)
   PostgreSQL configuration so that there is more space for temporary tables in memory.
+  Consider [creating a dedicated tablespace](https://www.postgresql.org/docs/9.4/sql-createtablespace.html)
+  and configuring [`temp_tablespaces`](https://www.postgresql.org/docs/devel/runtime-config-client.html#GUC-TEMP-TABLESPACES).
 * You might consider increasing `refreshThrottleWait` for reactive queries for
   which you can tolerate lower refresh rate and higher update latency, to decrease
   load on the database. Making too many refreshes for complex queries can saturate
