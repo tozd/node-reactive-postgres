@@ -1,5 +1,10 @@
 # reactive-postgres
 
+This node.js package brings reactive (or live) queries to PostgreSQL. You can take an arbitrary `SELECT` query,
+using multiple joins, data transformations, and even custom functions, and besides the initial set of
+results also get real-time updates about any changes to those results. This can enable you to keep UI in sync
+with the database in a reactive manner.
+
 ## Installation
 
 This is a node.js package. You can install it using NPM:
