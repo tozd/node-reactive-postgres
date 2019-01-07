@@ -11,7 +11,7 @@ const DEFAULT_QUERY_OPTIONS = {
   // TODO: Allow multi-column unique index as well.
   uniqueColumn: 'id',
   refreshThrottleWait: 100, // ms
-  mode: 'id',
+  mode: 'columns',
   types: null,
 };
 
@@ -22,8 +22,12 @@ const OP_MAP = new Map([
 ]);
 
 // TODO: Should we expose an event that the source has changed?
+//       We might not want this because it is an internal detail. Once we move to
+//       something like Incremental View Maintenance there will be no such event possible.
 // TODO: Should we allow disabling automatic refresh?
 //       This could allow one to then provide custom logic for refresh.
+//       We could use a negative value of "refreshThrottleWait" for this.
+//       But how would the user know when to refresh without an event that source has changed?
 class ReactiveQueryHandle extends Readable {
   constructor(manager, client, queryId, query, options) {
     super({
@@ -127,7 +131,7 @@ class ReactiveQueryHandle extends Readable {
           START TRANSACTION;
           CREATE TEMPORARY TABLE "${this.queryId}_cache" AS EXECUTE "${this.queryId}_query";
           CREATE UNIQUE INDEX "${this.queryId}_cache_id" ON "${this.queryId}_cache" ("${this.options.uniqueColumn}");
-          SELECT 1 AS __op__, ARRAY[]::TEXT[] AS __columns__, ${this.options.mode === 'id' ? `"${this.options.uniqueColumn}"` : '*'} FROM "${this.queryId}_cache";
+          SELECT 1 AS __op__, ARRAY[]::TEXT[] AS __columns__, ${this.options.mode === 'columns' ? `"${this.options.uniqueColumn}"` : '*'} FROM "${this.queryId}_cache";
           COMMIT;
         `,
         types: this.types,
@@ -331,7 +335,7 @@ class ReactiveQueryHandle extends Readable {
                  WHEN "${this.queryId}_new" IS NULL THEN ARRAY[]::TEXT[]
                  ELSE (SELECT COALESCE(array_agg(row1.key), ARRAY[]::TEXT[]) FROM each(hstore("${this.queryId}_new")) AS row1 INNER JOIN each(hstore("${this.queryId}_cache")) AS row2 ON (row1.key=row2.key) WHERE row1.value IS DISTINCT FROM row2.value)
             END AS __columns__,
-            (COALESCE("${this.queryId}_new", ROW("${this.queryId}_cache".*)::"${this.queryId}_new")).${this.options.mode === 'id' ? `"${this.options.uniqueColumn}"` : '*'}
+            (COALESCE("${this.queryId}_new", ROW("${this.queryId}_cache".*)::"${this.queryId}_new")).${this.options.mode === 'columns' ? `"${this.options.uniqueColumn}"` : '*'}
             FROM "${this.queryId}_cache" FULL OUTER JOIN "${this.queryId}_new" ON ("${this.queryId}_cache"."${this.options.uniqueColumn}"="${this.queryId}_new"."${this.options.uniqueColumn}")
             WHERE "${this.queryId}_cache" IS NULL OR "${this.queryId}_new" IS NULL OR "${this.queryId}_cache" OPERATOR(pg_catalog.*<>) "${this.queryId}_new";
           DROP TABLE "${this.queryId}_cache";
