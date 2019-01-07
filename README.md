@@ -17,27 +17,19 @@ for more information how to install and use it.
 
 Reactive queries are implemented in the following manner:
 
-* For every reactive query, a `TEMPORARY MATERIALIZED VIEW` is created
-  in the database.
+* For every reactive query, a `TEMPORARY TABLE` is created in the database
+  which serves as cache for current query results.
 * Triggers are added to all query sources for the query, so that
-  when any of the sources change, this package's client is
-  notified using `LISTEN`/`NOTIFY` that a source has changed, which can
+  when any of the sources change, this package is notified using
+  `LISTEN`/`NOTIFY` that a source has changed, which can
   potentially influence the results of the query.
-* Triggers are added to the view so that any `INSERT`s/`UPDATE`s/`DELETE`s
-  send notifications to the client about rows (and columns) changing.
-  In this way client can know what has changed in the query since
-  the last `REFRESH MATERIALIZED VIEW`.
-* Client waits for source changed events, and throttles them based
-  on `refreshThrottleWait` option. Once the delay expires, the client
-  issues `REFRESH MATERIALIZED VIEW CONCURRENTLY`. This reruns the
-  query and updates the view. This in turn notifies the client of
-  changes which happened since the previous refresh.
-* If operating in `id` mode, then those notifications are directly
-  emitted as events or pushed into a stream.
-* If operating in `changed` or `full` modes, notifications are batched
-  together based on `batchSize` and query to retrieve updated query
-  results data is made once batch is full. Results are used to populate
-  data about other columns when emitting events.
+* Package waits for source changed events, and throttles them based
+  on `refreshThrottleWait` option. Once the delay expires, the package
+  creates a new temporary table with new query results. It compares
+  the old and new table and computes changes using another database query.
+* Changes are returned the package's client and exposed to the user.
+* The old temporary table is dropped and the new one is renamed to take
+  its place.
 
 ## Performance
 
