@@ -19,6 +19,8 @@ Reactive queries are implemented in the following manner:
 
 * For every reactive query, a `TEMPORARY TABLE` is created in the database
   which serves as cache for query results.
+* Moreover, the query is `PREPARE`d, so that it does not have to be parsed again
+  and again.
 * Triggers are added to all query sources for the query, so that
   when any of sources change, this package is notified using
   `LISTEN`/`NOTIFY` that a source has changed, which can
@@ -125,19 +127,11 @@ per every `refreshThrottleWait` milliseconds
     control this delay based on requirements for a particular query
   * lower this value is, higher the load on the database will be, higher it is, lower the load
     will be
-* `mode`, default `columns`: in which mode to operate, it can be:
-  * `columns`: for every query results change, provide only which row and columns changed,
-    this does not require an additional query to the database to fetch updated results data
-  * `changed`: for every query results change, fetch and provide also updated results data,
-    but only those columns which have changed
-  * `full`: for every query results change, fetch and provide full rows of updated results data,
+* `mode`, default `changed`: in which mode to operate, it can be:
+  * `columns`: for every query results change, provide only which row and columns changed
+  * `changed`: for every query results change, provide new values for changed columns, too
+  * `full`: for every query results change, provide full changed rows,
     both columns which have changed and those which have not
-* `batchSize`, default `0`: when mode is `changed` or `full`, in how large batches
-  (for how many changes) do we fetch data for one refresh, 0 means only one batch
-  per refresh
-  * batching introduces additional delay between a change happening and emitting of the
-    corresponding change event
-  * lower the number is (except for 0), more queries to the database are made to fetch data
 * `types`, default `null`: [custom type parsers](https://node-postgres.com/features/queries#types)
 
 ##### `'start'` event `()`
