@@ -4,8 +4,7 @@ const {Readable} = require('stream');
 
 const AwaitLock = require('await-lock');
 const {Client} = require('pg');
-
-const {randomId} = require('./random');
+const {randomId} = require('@tozd/random-id');
 
 const DEFAULT_QUERY_OPTIONS = {
   // TODO: Allow multi-column unique index as well.

@@ -2,9 +2,9 @@
 
 const {Pool} = require('pg');
 const through2 = require('through2');
+const {UNMISTAKABLE_CHARS} = require('@tozd/random-id');
 
 const {Manager} = require('./index');
-const {UNMISTAKABLE_CHARS} = require('./random');
 
 const CONNECTION_CONFIG = {
   user: 'postgres',
