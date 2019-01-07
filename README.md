@@ -18,9 +18,9 @@ for more information how to install and use it.
 Reactive queries are implemented in the following manner:
 
 * For every reactive query, a `TEMPORARY TABLE` is created in the database
-  which serves as cache for current query results.
+  which serves as cache for query results.
 * Triggers are added to all query sources for the query, so that
-  when any of the sources change, this package is notified using
+  when any of sources change, this package is notified using
   `LISTEN`/`NOTIFY` that a source has changed, which can
   potentially influence the results of the query.
 * Package waits for source changed events, and throttles them based
