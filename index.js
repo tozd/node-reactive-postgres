@@ -631,10 +631,12 @@ class Manager extends EventEmitter {
 
     try {
       while (this._handlesForQuery.size) {
+        const promises = [];
         for (const [queryId, handle] of this._handlesForQuery.entries()) {
           // "stop" triggers "end" callback which removes the handle.
-          await handle.stop();
+          promises.push(handle.stop());
         }
+        await Promise.all(promises);
       }
 
       // All sources should be released when we called "stop" on all handles.
