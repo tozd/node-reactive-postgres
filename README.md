@@ -459,10 +459,11 @@ Event emitted when the stream has been destroyed.
   on the other hand, this package maintains cached results of the query in a temporary table in the database
   and just compares new results with cached results and return updates to the client
 * [pg-live-query](https://github.com/nothingisdead/pg-live-query) – adds revision columns to sources and additional
-  temporary table which stores information how those revisions map to queries, moreover, it modifies the query to add
-  additional columns so that it is possible to reconstruct how inputs map to outputs, all this then allows computing
-  changes inside the database, but in benchmarks it seems all this additional complexity does not really add much in
-  comparison with just comparing new results with cached results directly, which is what this package does
+  temporary table to store latest revisions for results, moreover, it rewrites queries to expose those additional
+  revision columns, all this then allows simpler determination of what has changed when the query is refreshed,
+  inside the database through a query, but in benchmarks it seems all this additional complexity does not really
+  make things faster in comparison with just comparing new results with cached results directly, which is what this
+  package does
 * [pg-query-observer](https://github.com/Richie765/pg-query-observer) – it seems like a bit cleaned and updated version
   of `pg-live-select`, but buggy and does not work with multiple parallel queries
 * [pg-reactivity-benchmark](https://github.com/mitar/node-pg-reactivity-benchmark) – a benchmark for this and above
