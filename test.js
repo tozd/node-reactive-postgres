@@ -87,9 +87,9 @@ async function sleep(ms) {
 
   const queries = [
     // All comments with embedded post.
-    `SELECT "_id", "body", (SELECT row_to_json(posts) FROM posts WHERE posts."_id"=comments."postId") AS "post" FROM comments`,
+    `SELECT "_id", "body", (SELECT to_jsonb(posts) FROM posts WHERE posts."_id"=comments."postId") AS "post" FROM comments`,
     // All posts with embedded comments.
-    `SELECT "_id", "body", (SELECT array_to_json(COALESCE(array_agg(row_to_json(comments)), ARRAY[]::JSON[])) FROM comments WHERE comments."postId"=posts."_id") AS "comments" FROM posts`,
+    `SELECT "_id", "body", (SELECT to_jsonb(COALESCE(array_agg(comments), '{}')) FROM comments WHERE comments."postId"=posts."_id") AS "comments" FROM posts`,
   ];
 
   let handle1 = await manager.query(queries[0], {uniqueColumn: '_id', mode: 'changed'});
