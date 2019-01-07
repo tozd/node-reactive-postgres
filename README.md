@@ -71,7 +71,7 @@ Reactive queries are implemented in the following manner:
 
 * Queries require an unique column which serves to identify rows and
   changes to them. Which column this is is configured through
-  `uniqueColumn` query option. By default is `columns`.
+  `uniqueColumn` query option. By default is `id`.
 * Order of rows in query results are ignored when determining changes.
   Order still matters when selecting which rows are in query results
   through `ORDER BY X LIMIT Y` pattern. If you care about order of
