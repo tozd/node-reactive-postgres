@@ -261,9 +261,11 @@ class ReactiveQueryHandle extends Readable {
       if (op === 'update') {
         // TODO: Select and fetch only changed columns in "changed" mode.
         //       Currently we select all columns and remove unchanged columns on the client.
-        for (const key of Object.keys(row)) {
-          if (key !== this.options.uniqueColumn && !columns.includes(key)) {
-            delete row[key];
+        if (this.options.mode === 'changed') {
+          for (const key of Object.keys(row)) {
+            if (key !== this.options.uniqueColumn && !columns.includes(key)) {
+              delete row[key];
+            }
           }
         }
         if (this._isStream) {
