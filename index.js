@@ -909,7 +909,9 @@ class Manager extends EventEmitter {
       // We ignore notifications for unknown sources.
       for (const queryId of (this._sources.get(payload.name) || [])) {
         const handle = this._getHandleForQuery(queryId);
-        if (handle) handle._onSourceChanged();
+        if (handle) {
+          handle._onSourceChanged();
+        }
       }
     }
     else {
