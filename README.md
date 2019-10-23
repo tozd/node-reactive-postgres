@@ -16,6 +16,8 @@ $ npm install reactive-postgres
 This package uses PostgreSQL. See [documentation](https://www.postgresql.org/docs/devel/tutorial-start.html)
 for more information how to install and use it.
 
+Requires PostgreSQL 11 or newer.
+
 ## Usage
 
 As an event emitter:
