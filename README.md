@@ -470,3 +470,9 @@ Event emitted when the stream has been destroyed.
   of `pg-live-select`, but buggy and does not work with multiple parallel queries
 * [pg-reactivity-benchmark](https://github.com/mitar/node-pg-reactivity-benchmark) – a benchmark for this and above
   mentioned packages
+
+## reactive-postgres for enterprise
+
+Available as part of the Tidelift Subscription.
+
+The maintainers of reactive-postgres and thousands of other packages are working with Tidelift to deliver commercial support and maintenance for the open source dependencies you use to build your applications. Save time, reduce risk, and improve code health, while paying the maintainers of the exact dependencies you use. [Learn more.](https://tidelift.com/subscription/pkg/npm-reactive-postgres?utm_source=npm-reactive-postgres&utm_medium=referral&utm_campaign=enterprise&utm_term=repo)
