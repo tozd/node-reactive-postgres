@@ -2,7 +2,7 @@ const assert = require('assert');
 const EventEmitter = require('events');
 const {Readable} = require('stream');
 
-const AwaitLock = require('await-lock');
+const AwaitLock = require('await-lock').default;
 const {Client} = require('pg');
 const {randomId} = require('@tozd/random-id');
 
