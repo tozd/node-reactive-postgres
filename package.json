@@ -29,5 +29,15 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/tozd/node-reactive-postgres.git"
-  }
+  },
+  "funding": [
+    {
+      "type": "github",
+      "url": "https://github.com/sponsors/mitar"
+    },
+    {
+      "type": "tidelift",
+      "url": "https://tidelift.com/subscription/pkg/npm-reactive-postgres"
+    }
+  ]
 }
