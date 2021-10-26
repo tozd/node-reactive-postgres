@@ -218,7 +218,8 @@ Reactive queries are implemented in the following manner:
 * To be able to determine if an UPDATE query really changed any source tables used in
   your reactive query, source tables should have only columns of types which have an
   equality operator defined (e.g., `json` column type does not). If this is not so,
-  it is just assumed that every UPDATE query makes a change.
+  it is just assumed that every UPDATE query makes a change. See
+  [#7](https://github.com/tozd/node-reactive-postgres/issues/16) for more information.
 
 ## API
 
