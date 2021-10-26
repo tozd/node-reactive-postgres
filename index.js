@@ -581,24 +581,24 @@ class Manager extends EventEmitter {
             manager_id TEXT := TG_ARGV[0];
           BEGIN
             IF (TG_OP = 'INSERT') THEN
-              PERFORM * FROM new_table LIMIT 1;
+              PERFORM * FROM new_rows LIMIT 1;
               IF FOUND THEN
                 EXECUTE 'NOTIFY "' || manager_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
               END IF;
             ELSIF (TG_OP = 'UPDATE') THEN
               BEGIN
-                PERFORM * FROM ((TABLE old_table EXCEPT TABLE new_table) UNION ALL (TABLE new_table EXCEPT TABLE old_table)) AS differences LIMIT 1;
+                PERFORM * FROM ((TABLE old_rows EXCEPT TABLE new_rows) UNION ALL (TABLE new_rows EXCEPT TABLE old_rows)) AS differences LIMIT 1;
                 IF FOUND THEN
                   EXECUTE 'NOTIFY "' || manager_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
                 END IF;
               EXCEPTION WHEN undefined_function THEN
-                PERFORM * FROM new_table LIMIT 1;
+                PERFORM * FROM new_rows LIMIT 1;
                 IF FOUND THEN
                   EXECUTE 'NOTIFY "' || manager_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
                 END IF;
               END;
             ELSIF (TG_OP = 'DELETE') THEN
-              PERFORM * FROM old_table LIMIT 1;
+              PERFORM * FROM old_rows LIMIT 1;
               IF FOUND THEN
                 EXECUTE 'NOTIFY "' || manager_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
               END IF;
@@ -771,9 +771,9 @@ class Manager extends EventEmitter {
         try {
           await this.client.query(`
             START TRANSACTION;
-            CREATE TRIGGER "${this.managerId}_source_changed_${source}_insert" AFTER INSERT ON "${source}" REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
-            CREATE TRIGGER "${this.managerId}_source_changed_${source}_update" AFTER UPDATE ON "${source}" REFERENCING NEW TABLE AS new_table OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
-            CREATE TRIGGER "${this.managerId}_source_changed_${source}_delete" AFTER DELETE ON "${source}" REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
+            CREATE TRIGGER "${this.managerId}_source_changed_${source}_insert" AFTER INSERT ON "${source}" REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
+            CREATE TRIGGER "${this.managerId}_source_changed_${source}_update" AFTER UPDATE ON "${source}" REFERENCING NEW TABLE AS new_rows OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
+            CREATE TRIGGER "${this.managerId}_source_changed_${source}_delete" AFTER DELETE ON "${source}" REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
             COMMIT;
           `);
         }
