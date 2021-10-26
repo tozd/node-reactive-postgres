@@ -66,9 +66,12 @@ async function sleep(ms) {
     CREATE TABLE comments (
       "_id" CHAR(17) PRIMARY KEY DEFAULT random_id(),
       "postId" CHAR(17) NOT NULL REFERENCES posts("_id"),
-      "body" JSONB NOT NULL DEFAULT '{}'::JSONB
+      "body" JSONB NOT NULL DEFAULT '{}'::JSONB,
+      "user" JSON NOT NULL DEFAULT '{}'::JSON
     );
   `);
+
+  console.log("Inserting initial posts with comments...")
 
   let result;
   for (let i = 0; i < 5; i++) {
@@ -80,14 +83,14 @@ async function sleep(ms) {
 
     for (let j = 0; j < 10; j++) {
       await pool.query(`
-        INSERT INTO comments ("postId", "body") VALUES($1, $2);
-      `, [postId, {'title': `Comment title ${j}`}]);
+        INSERT INTO comments ("postId", "body", "user") VALUES($1, $2, $3);
+      `, [postId, {'title': `Comment title ${j}`}, {'name': 'Foobar'}]);
     }
   }
 
   const queries = [
     // All comments with embedded post.
-    `SELECT "_id", "body", (SELECT to_jsonb(posts) FROM posts WHERE posts."_id"=comments."postId") AS "post" FROM comments`,
+    `SELECT "_id", "body", "user", (SELECT to_jsonb(posts) FROM posts WHERE posts."_id"=comments."postId") AS "post" FROM comments`,
     // All posts with embedded comments.
     `SELECT "_id", "body", (SELECT to_jsonb(COALESCE(array_agg(comments), '{}')) FROM comments WHERE comments."postId"=posts."_id") AS "comments" FROM posts`,
   ];
@@ -126,6 +129,8 @@ async function sleep(ms) {
     console.log(new Date(), 'query stop', handle1.queryId, error);
   });
 
+  console.log("Starting queries...");
+
   await handle1.start();
 
   const handle2 = await manager.query(queries[1], {uniqueColumn: '_id', mode: 'changed'});
@@ -142,6 +147,8 @@ async function sleep(ms) {
 
   await sleep(1000);
 
+  console.log("Inserting additional posts with comments...");
+
   let commentIds = [];
   for (let i = 5; i < 7; i++) {
     result = await pool.query(`
@@ -152,14 +159,16 @@ async function sleep(ms) {
 
     for (let j = 0; j < 10; j++) {
       result = await pool.query(`
-        INSERT INTO comments ("postId", "body") VALUES($1, $2) RETURNING _id;
-      `, [postId, {'title': `Comment title ${j}`}]);
+        INSERT INTO comments ("postId", "body", "user") VALUES($1, $2, $3) RETURNING _id;
+      `, [postId, {'title': `Comment title ${j}`}, {'name': 'Foobar'}]);
 
       commentIds.push(result.rows[0]._id);
     }
   }
 
   await sleep(1000);
+
+  console.log("Updating additional comments' body...");
 
   for (let i = 0; i < commentIds.length; i++) {
     await pool.query(`
@@ -168,6 +177,18 @@ async function sleep(ms) {
   }
 
   await sleep(1000);
+
+  console.log("Updating additional comments' user...");
+
+  for (let i = 0; i < commentIds.length; i++) {
+    await pool.query(`
+      UPDATE comments SET "user"=$1 WHERE "_id"=$2;
+    `, [{'name': 'Foobar2'}, commentIds[i]]);
+  }
+
+  await sleep(1000);
+
+  console.log("Deleting additional comments...");
 
   await pool.query(`
     DELETE FROM comments WHERE "_id"=ANY($1);

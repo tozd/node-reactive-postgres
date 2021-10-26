@@ -571,8 +571,10 @@ class Manager extends EventEmitter {
 
       await this.client.connect();
 
-      // We define the function as temporary for every client so that triggers using
-      // it are dropped when the client disconnects (session ends).
+      // We define the function as temporary for every client so that triggers using it are dropped when the client disconnects
+      // (session ends). We have a special case for UPDATE operation because it checks if UPDATE really changed anything
+      // but that requires that equality operator is defined for all columns. If that is not so, we just assume data has changed
+      // if UPDATE affected any rows. See: https://github.com/tozd/node-reactive-postgres/issues/16
       await this.client.query(`
         CREATE OR REPLACE FUNCTION pg_temp.notify_source_changed() RETURNS TRIGGER LANGUAGE plpgsql AS $$
           DECLARE
@@ -584,10 +586,17 @@ class Manager extends EventEmitter {
                 EXECUTE 'NOTIFY "' || manager_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
               END IF;
             ELSIF (TG_OP = 'UPDATE') THEN
-              PERFORM * FROM ((TABLE old_table EXCEPT TABLE new_table) UNION ALL (TABLE new_table EXCEPT TABLE old_table)) AS differences LIMIT 1;
-              IF FOUND THEN
-                EXECUTE 'NOTIFY "' || manager_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
-              END IF;
+              BEGIN
+                PERFORM * FROM ((TABLE old_table EXCEPT TABLE new_table) UNION ALL (TABLE new_table EXCEPT TABLE old_table)) AS differences LIMIT 1;
+                IF FOUND THEN
+                  EXECUTE 'NOTIFY "' || manager_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
+                END IF;
+              EXCEPTION WHEN undefined_function THEN
+                PERFORM * FROM new_table LIMIT 1;
+                IF FOUND THEN
+                  EXECUTE 'NOTIFY "' || manager_id || '_source_changed", ''{"name": "' || TG_TABLE_NAME || '", "schema": "' || TG_TABLE_SCHEMA || '"}''';
+                END IF;
+              END;
             ELSIF (TG_OP = 'DELETE') THEN
               PERFORM * FROM old_table LIMIT 1;
               IF FOUND THEN

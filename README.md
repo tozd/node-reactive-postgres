@@ -215,6 +215,10 @@ Reactive queries are implemented in the following manner:
 * Queries cannot contain placeholders or be prepared. You can use
   `client.escapeLiteral(...)` function to escape values when constructing
   a query.
+* To be able to determine if an UPDATE query really changed any source tables used in
+  your reactive query, source tables should have only columns of types which have an
+  equality operator defined (e.g., `json` column type does not). If this is not so,
+  it is just assumed that every UPDATE query makes a change.
 
 ## API
 
@@ -319,7 +323,7 @@ before starting, so that no events are missed.
 
 ##### `async stop([error])`
 
-Stops the reactive query. 
+Stops the reactive query.
 It emits `'stop'` event. Accepts optional `error` argument which is passed
 as payload in `'stop'` event.
 
