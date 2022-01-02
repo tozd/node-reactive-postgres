@@ -481,3 +481,6 @@ Event emitted when the stream has been destroyed.
   of `pg-live-select`, but buggy and does not work with multiple parallel queries
 * [pg-reactivity-benchmark](https://github.com/mitar/node-pg-reactivity-benchmark) – a benchmark for this and above
   mentioned packages
+* [supabase realtime](https://github.com/supabase/realtime) – it broadcasts changes in PostgreSQL over WebSockets
+  by observing write-ahead log, but it does not support arbitrary reactive queries, just changes to tables themselves,
+  so it is more of a database replication over WebSockets
