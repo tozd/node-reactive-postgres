@@ -70,7 +70,7 @@ class ReactiveQueryHandle extends Readable {
       const results = await this.client.query({
         text: `
           PREPARE "${this.queryId}_query" AS (${this.query});
-          EXPLAIN (FORMAT JSON) EXECUTE "${this.queryId}_query";
+          EXPLAIN (VERBOSE, FORMAT JSON) EXECUTE "${this.queryId}_query";
         `,
         rowMode: 'array',
       });
@@ -424,7 +424,7 @@ class ReactiveQueryHandle extends Readable {
     else if (queryExplanation instanceof Object) {
       for (const [key, value] of Object.entries(queryExplanation)) {
         if (key === 'Relation Name') {
-          sources.add(value);
+          sources.add(qualifySource(queryExplanation['Schema'], value));
         }
         else {
           sources = new Set([...sources, ...this._extractSources(value)]);
@@ -771,9 +771,9 @@ class Manager extends EventEmitter {
         try {
           await this.client.query(`
             START TRANSACTION;
-            CREATE TRIGGER "${this.managerId}_source_changed_${source}_insert" AFTER INSERT ON "${source}" REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
-            CREATE TRIGGER "${this.managerId}_source_changed_${source}_update" AFTER UPDATE ON "${source}" REFERENCING NEW TABLE AS new_rows OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
-            CREATE TRIGGER "${this.managerId}_source_changed_${source}_delete" AFTER DELETE ON "${source}" REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
+            CREATE TRIGGER "${this.managerId}_source_changed_${escapeSource(source)}_insert" AFTER INSERT ON ${source} REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
+            CREATE TRIGGER "${this.managerId}_source_changed_${escapeSource(source)}_update" AFTER UPDATE ON ${source} REFERENCING NEW TABLE AS new_rows OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
+            CREATE TRIGGER "${this.managerId}_source_changed_${escapeSource(source)}_delete" AFTER DELETE ON ${source} REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
             COMMIT;
           `);
         }
@@ -787,7 +787,7 @@ class Manager extends EventEmitter {
 
         try {
           await this.client.query(`
-            CREATE TRIGGER "${this.managerId}_source_changed_${source}_truncate" AFTER TRUNCATE ON "${source}" FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
+            CREATE TRIGGER "${this.managerId}_source_changed_${escapeSource(source)}_truncate" AFTER TRUNCATE ON ${source} FOR EACH STATEMENT EXECUTE FUNCTION pg_temp.notify_source_changed('${this.managerId}');
           `);
         }
         // Ignoring errors. The source might not support TRUNCATE trigger.
@@ -824,10 +824,10 @@ class Manager extends EventEmitter {
       try {
         await this.client.query(`
           UNLISTEN "${this.managerId}_source_changed";
-          DROP TRIGGER IF EXISTS "${this.managerId}_source_changed_${source}_insert" ON "${source}";
-          DROP TRIGGER IF EXISTS "${this.managerId}_source_changed_${source}_update" ON "${source}";
-          DROP TRIGGER IF EXISTS "${this.managerId}_source_changed_${source}_delete" ON "${source}";
-          DROP TRIGGER IF EXISTS "${this.managerId}_source_changed_${source}_truncate" ON "${source}";
+          DROP TRIGGER IF EXISTS "${this.managerId}_source_changed_${escapeSource(source)}_insert" ON ${source};
+          DROP TRIGGER IF EXISTS "${this.managerId}_source_changed_${escapeSource(source)}_update" ON ${source};
+          DROP TRIGGER IF EXISTS "${this.managerId}_source_changed_${escapeSource(source)}_delete" ON ${source};
+          DROP TRIGGER IF EXISTS "${this.managerId}_source_changed_${escapeSource(source)}_truncate" ON ${source};
         `);
       }
       catch (error) {
@@ -916,7 +916,8 @@ class Manager extends EventEmitter {
 
     if (notificationType === 'source_changed') {
       // We ignore notifications for unknown sources.
-      for (const queryId of (this._sources.get(payload.name) || [])) {
+      const source = qualifySource(payload.schema, payload.name);
+      for (const queryId of (this._sources.get(source) || [])) {
         const handle = this._getHandleForQuery(queryId);
         if (handle) {
           handle._onSourceChanged();
@@ -927,6 +928,14 @@ class Manager extends EventEmitter {
       console.warn(`Unknown notification type '${notificationType}'.`);
     }
   }
+}
+
+function qualifySource(schema, name) {
+  return `"${schema}"."${name}"`;
+}
+
+function escapeSource(source) {
+  return source.replace(/[^a-z0-9_]/gi, '_');
 }
 
 module.exports = {
